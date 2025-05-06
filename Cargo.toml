@@ -21,3 +21,5 @@ axum = { version = "0.8.4" }
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
 
 anyhow = "1.0"
+tokio-stream = "0.1.17"
+async-channel = "2.3.1"
