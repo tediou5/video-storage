@@ -236,6 +236,9 @@ fn setup_vp9_video_encoder(
     ost_video.set_parameters(&opened_encoder);
     debug!(%job_id, "VP9 video stream added to output with index {}", ost_video.index());
 
+    // Explicitly set the stream's own time_base (AVStream->time_base).
+    ost_video.set_time_base(ffmpeg_next::Rational::new(1, 1000));
+
     Ok((ost_video.index(), opened_encoder))
 }
 
@@ -301,6 +304,14 @@ fn setup_opus_audio_encoder_and_resampler(
     let mut ost_audio = octx.add_stream(opus_codec_finder.id())?;
     ost_audio.set_parameters(&opened_encoder);
     debug!(%job_id, "Opus audio stream added to output with index {}", ost_audio.index());
+
+    // Explicitly set the stream's own time_base (AVStream->time_base)
+    ost_audio.set_time_base(Rational::new(1, OPUS_TARGET_RATE as i32)); // Assuming OPUS_TARGET_RATE is u32 or similar, cast to i32
+
+    debug!(%job_id, "Opus audio stream (index {}) added. Stream time_base: {:?}",
+        ost_audio.index(),
+        ost_audio.time_base(), // Verify this is now 1/OPUS_TARGET_RATE
+    );
 
     // --- Audio Resampler Setup ---
     let in_ch_layout = dec_audio.channel_layout();
@@ -749,6 +760,15 @@ pub fn convert_to_vp9(job_id: &str, input: &Path, output: &Path) -> anyhow::Resu
         opus_num_channels,
     ) = setup_opus_audio_encoder_and_resampler(job_id, &dec_audio, &mut octx)?;
 
+    debug!(
+        "Output audio stream time_base before write_header: {:?}",
+        octx.stream(out_audio_stream_idx).unwrap().time_base()
+    );
+    debug!(
+        "Output video stream time_base before write_header: {:?}",
+        octx.stream(out_video_stream_idx).unwrap().time_base()
+    );
+
     octx.write_header()
         .map_err(|e| anyhow!("Output: Failed to write context header: {e}"))?;
     debug!("Output context header written successfully.");
@@ -938,7 +958,7 @@ pub(crate) fn convert_to_hls(job_id: &str, input: &Path, out_dir: &Path) -> anyh
     let temp_vp9_dir = PathBuf::from("/tmp").join(format!("tmp-vp9-{job_id}"));
     std::fs::create_dir_all(&temp_vp9_dir)?;
 
-    let vp9_file = temp_vp9_dir.join("vp9.mp4");
+    let vp9_file = temp_vp9_dir.join("vp9.webm");
     // convert to vp9
     convert_to_vp9(job_id, input, &vp9_file)
         .inspect_err(|error| error!(%error, "Failed to convert to vp9"))?;
