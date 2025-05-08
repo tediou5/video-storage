@@ -1144,14 +1144,15 @@ pub(crate) fn convert_to_hls(job_id: &str, input: &Path, out_dir: &Path) -> anyh
     convert_to_vp9(job_id, input, &vp9_file)
         .inspect_err(|error| error!(%error, "Failed to convert to vp9"))?;
     let input = vp9_file;
+    let input_path = input.to_str().ok_or(anyhow!("Empty input path"))?;
 
     debug!(%job_id, ?input, ?out_dir, "Converting to HLS");
+
     // input context
-    let input_path = input.to_str().ok_or(anyhow!("Empty input path"))?;
-    // let mut ictx = format::input(&input_path)?;
     let mut open_opts = Dictionary::new();
     open_opts.set("probesize", "5000000"); // Read 5 MB data to probe
     open_opts.set("analyzeduration", "10000000"); // Read 10 s data to analyze
+
     let mut ictx = format::input_with_dictionary(input_path, open_opts)
         .inspect_err(|error| error!(?error, %job_id, "Failed to open input vp9 video"))?;
 
@@ -1166,11 +1167,12 @@ pub(crate) fn convert_to_hls(job_id: &str, input: &Path, out_dir: &Path) -> anyh
     opts.set(
         "hls_segment_filename",
         &format!(
-            "{}/segment_%03d.ts",
+            "{}/segment_%03d.m4s",
             out_dir.to_str().ok_or(anyhow!("Empty output path"))?
         ),
     );
-    octx.set_metadata(opts);
+    opts.set("hls_fmp4_init_filename", "init.mp4");
+    opts.set("hls_segment_type", "fmp4");
 
     // codec copy
     for stream in ictx.streams() {
@@ -1179,7 +1181,9 @@ pub(crate) fn convert_to_hls(job_id: &str, input: &Path, out_dir: &Path) -> anyh
         ost.set_parameters(stream.parameters());
     }
 
-    octx.write_header()?;
+    octx.write_header_with(opts).map_err(|error| {
+        anyhow!("Failed to write header with opts when convert to hls: {error}")
+    })?;
 
     for (stream, mut packet) in ictx.packets() {
         if packet.duration() == 0 && stream.parameters().medium() == media::Type::Video {
