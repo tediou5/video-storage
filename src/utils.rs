@@ -12,7 +12,7 @@ use ffmpeg_next::software::scaling::flag::Flags;
 use ffmpeg_next::threading;
 use ffmpeg_next::{ChannelLayout, Rational};
 use ffmpeg_next::{Dictionary, Packet, codec, format, media};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const CRF: &str = "38";
 
@@ -306,7 +306,7 @@ fn setup_opus_audio_encoder_and_resampler(
     debug!(%job_id, "Opus audio stream added to output with index {}", ost_audio.index());
 
     // Explicitly set the stream's own time_base (AVStream->time_base)
-    ost_audio.set_time_base(Rational::new(1, OPUS_TARGET_RATE as i32)); // Assuming OPUS_TARGET_RATE is u32 or similar, cast to i32
+    ost_audio.set_time_base(Rational::new(1, OPUS_TARGET_RATE)); // Assuming OPUS_TARGET_RATE is u32 or similar, cast to i32
 
     debug!(%job_id, "Opus audio stream (index {}) added. Stream time_base: {:?}",
         ost_audio.index(),
@@ -353,6 +353,168 @@ fn setup_opus_audio_encoder_and_resampler(
         actual_opus_frame_size,
         actual_opus_channels,
     ))
+}
+
+/// Handles an encoded video packet by rescaling its timestamps and writing it to the output context.
+fn handle_encoded_video_packet(
+    job_id: &str,
+    encoded_packet: &mut Packet,
+    output_stream_index: usize,
+    encoder_output_time_base: Rational,
+    output_format_context: &mut format::context::Output,
+) -> anyhow::Result<()> {
+    // Log the state of the packet as it comes from the encoder
+    let original_pts_val = encoded_packet.pts();
+    let original_dts_val = encoded_packet.dts();
+    let original_duration_val = encoded_packet.duration();
+
+    trace!(
+        %job_id,
+        PTS_raw = ?original_pts_val,
+        DTS_raw = ?original_dts_val,
+        Duration_raw = ?original_duration_val,
+        Encoder_Output_TB = ?encoder_output_time_base,
+        "Video packet FROM ENCODER"
+    );
+
+    // Set the stream index for the packet
+    encoded_packet.set_stream(output_stream_index);
+
+    // Get the target time_base from the output stream context
+    let target_stream_time_base = output_format_context
+        .stream(output_stream_index)
+        .ok_or_else(|| {
+            let message = format!("Failed to get output stream for index {output_stream_index}");
+            error!(%job_id, %message);
+            anyhow!(message)
+        })?
+        .time_base();
+
+    // Ensure both source (encoder_output_time_base) and target time_bases are valid for rescaling
+    if encoder_output_time_base.denominator() == 0 {
+        let message = format!(
+            "Source (encoder output) time_base {encoder_output_time_base:?} has a zero denominator, cannot rescale PTS."
+        );
+        error!(%job_id, %message);
+        return Err(anyhow!(message));
+    }
+    if target_stream_time_base.denominator() == 0 {
+        // This check should ideally be redundant if prior setup guarantees a valid target_stream_time_base (like 1/1000)
+        let message = format!(
+            "Target (output stream) time_base {target_stream_time_base:?} has a zero denominator, cannot rescale PTS."
+        );
+        error!(%job_id, %message);
+        return Err(anyhow!(message));
+    }
+
+    trace!(%job_id, ?encoder_output_time_base, ?target_stream_time_base, "Video RESCALE_TS");
+
+    // Perform the timestamp rescaling
+    encoded_packet.rescale_ts(encoder_output_time_base, target_stream_time_base);
+
+    // Log the state of the packet after rescaling
+    let final_pts_val = encoded_packet.pts();
+    let final_dts_val = encoded_packet.dts();
+    let final_duration_val = encoded_packet.duration();
+
+    trace!(
+        %job_id,
+        PTS_final = ?final_pts_val,
+        DTS_final = ?final_dts_val,
+        Duration_final = ?final_duration_val,
+        Target_Stream_TB = ?target_stream_time_base,
+        "Video packet AFTER RESCALE_TS",
+    );
+
+    // Log PTS in seconds for easier interpretation
+    if let Some(pts) = final_pts_val {
+        // Check denominator again just for this calculation, as rescale_ts might produce strange rationals if inputs were weird
+        if target_stream_time_base.denominator() != 0 {
+            let pts_in_seconds = pts as f64 * target_stream_time_base.numerator() as f64
+                / target_stream_time_base.denominator() as f64;
+            trace!(%job_id, "Video packet AFTER RESCALE_TS: PTS_final_seconds={pts_in_seconds:.3}s");
+        } else if target_stream_time_base.numerator() == 0
+            && target_stream_time_base.denominator() == 1
+        {
+            // Handle case like Rational(0,1) which is valid but results in 0 seconds.
+            trace!(%job_id, "Video packet AFTER RESCALE_TS: PTS_final_seconds=0.000s (Target_Stream_TB is 0/1)");
+        } else {
+            // This case should have been caught by the denominator check above before rescale_ts.
+            warn!(
+                %job_id,
+                "Cannot calculate PTS in seconds for logging because Target_Stream_TB denominator is zero (was {target_stream_time_base:?})."
+            );
+        }
+    }
+
+    // Write the packet to the output file
+    if let Err(e) = encoded_packet.write_interleaved(output_format_context) {
+        let message = format!("Output: Error writing interleaved video packet: {e}");
+        error!(%job_id, %message);
+        return Err(anyhow!(message));
+    }
+
+    Ok(())
+}
+
+/// Handles an encoded audio packet: sets metadata, logs, and writes to output.
+fn handle_encoded_audio_packet(
+    job_id: &str,
+    encoded_packet: &mut Packet,
+    output_stream_index: usize,
+    current_pts_in_source_tb: i64,     // audio_next_pts
+    packet_duration_in_source_tb: i64, // opus_frame_size
+    output_format_context: &mut OutputContext,
+) -> anyhow::Result<()> {
+    encoded_packet.set_stream(output_stream_index);
+
+    encoded_packet.set_pts(Some(current_pts_in_source_tb));
+    encoded_packet.set_dts(Some(current_pts_in_source_tb));
+    encoded_packet.set_duration(packet_duration_in_source_tb);
+
+    let source_audio_time_base = Rational::new(1, OPUS_TARGET_RATE);
+    let target_webm_audio_time_base = Rational::new(1, 1000);
+
+    trace!(
+        %job_id,
+        Raw_PTS = current_pts_in_source_tb,
+        Raw_Duration = packet_duration_in_source_tb,
+        Source_TB = ?source_audio_time_base,
+        Source_TB = ?source_audio_time_base,
+        Target_TB = ?target_webm_audio_time_base,
+        "Audio packet BEFORE RESCALE",
+    );
+
+    encoded_packet.rescale_ts(source_audio_time_base, target_webm_audio_time_base);
+
+    let final_pts = encoded_packet.pts().unwrap_or(0);
+    let final_duration = encoded_packet.duration();
+    let pts_in_seconds = if target_webm_audio_time_base.denominator() != 0 {
+        final_pts as f64 * target_webm_audio_time_base.numerator() as f64
+            / target_webm_audio_time_base.denominator() as f64
+    } else {
+        0.0
+    };
+
+    trace!(
+        %job_id,
+        "Audio packet AFTER RESCALE (PREPARED for writing): Final_PTS={}, Final_Duration={}, PTS_seconds={:.3}s, Target_TB={:?}",
+        final_pts,
+        final_duration,
+        pts_in_seconds,
+        target_webm_audio_time_base
+    );
+
+    // 5. 写入数据包
+    if let Err(e) = encoded_packet.write_interleaved(output_format_context) {
+        let error = format!(
+            "Output: Error writing interleaved audio packet (Rescaled PTS {final_pts}): {e}",
+        );
+        error!(%job_id, %error);
+        return Err(anyhow!(error));
+    }
+
+    Ok(())
 }
 
 fn flush_video_path(
@@ -430,15 +592,16 @@ fn flush_video_path(
     loop {
         match enc_video.receive_packet(&mut encoded_video_packet_eof) {
             Ok(_) => {
-                // Packet successfully received from encoder
-                encoded_video_packet_eof.set_stream(out_video_stream_idx);
-                encoded_video_packet_eof.rescale_ts(
-                    in_video_time_base,
-                    octx.stream(out_video_stream_idx).unwrap().time_base(),
-                );
-                if encoded_video_packet_eof.write_interleaved(octx).is_err() {
-                    error!(%job_id, "Output: Error writing final EOF video packet, stopping.");
-                    return Err(anyhow!("Output: Error writing final EOF video packet"));
+                if let Err(error) = handle_encoded_video_packet(
+                    job_id,
+                    &mut encoded_video_packet_eof,
+                    out_video_stream_idx,
+                    in_video_time_base, // Use the passed encoder's output time_base
+                    octx,
+                ) {
+                    // Log error, but might continue flushing other packets unless it's a fatal write error
+                    error!(%job_id, ?error, "Error handling flushed video packet");
+                    // Decide if to propagate or just log
                 }
             }
             Err(ffmpeg_next::Error::Eof) => {
@@ -446,10 +609,10 @@ fn flush_video_path(
                 debug!(%job_id, "Video encoder fully flushed (EOF received).");
                 break; // Exit the encoder drain loop
             }
-            Err(e) => {
+            Err(error) => {
                 // Handle other real errors
-                error!(%job_id, "VP9 Encoder: Error receiving final packet: {}", e);
-                return Err(e.into());
+                error!(%job_id, ?error, "VP9 Encoder: Error receiving final packet");
+                return Err(error.into());
             }
         }
     } // End encoder drain loop
@@ -458,6 +621,7 @@ fn flush_video_path(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn flush_audio_path(
     job_id: &str,
     dec_audio: &mut codec::decoder::Audio,
@@ -471,7 +635,11 @@ fn flush_audio_path(
     opus_num_channels: usize,
     audio_next_pts: &mut i64,
 ) -> anyhow::Result<()> {
-    debug!(%job_id, "Flushing audio decoder, resampler, and encoder...");
+    debug!(
+        %job_id,
+        "Flushing audio path starting. Initial audio_next_pts: {} ({:.3}s)",
+        *audio_next_pts, *audio_next_pts as f64 / OPUS_TARGET_RATE as f64
+    );
 
     // 1. Drain the audio decoder
     debug!(%job_id, "Sending EOF to audio decoder...");
@@ -550,8 +718,7 @@ fn flush_audio_path(
         if let Err(e) = enc_audio.send_frame(opus_input_frame) {
             /* handle error */
             return Err(anyhow!(
-                "Failed sending buffered audio frame during flush: {}",
-                e
+                "Failed sending buffered audio frame during flush: {e}",
             ));
         }
 
@@ -560,17 +727,14 @@ fn flush_audio_path(
         loop {
             match enc_audio.receive_packet(&mut encoded_audio_packet) {
                 Ok(_) => {
-                    // Packet received
-                    encoded_audio_packet.set_stream(out_audio_stream_idx);
-                    encoded_audio_packet.set_pts(Some(*audio_next_pts));
-                    encoded_audio_packet.set_dts(Some(*audio_next_pts));
-                    encoded_audio_packet.set_duration(opus_frame_size as i64);
-                    if encoded_audio_packet.write_interleaved(octx).is_err() {
-                        /* handle error */
-                        return Err(anyhow!(
-                            "Output: Error writing interleaved audio packet during flush"
-                        ));
-                    }
+                    handle_encoded_audio_packet(
+                        job_id,
+                        &mut encoded_audio_packet,
+                        out_audio_stream_idx,
+                        *audio_next_pts,
+                        opus_frame_size as i64,
+                        octx,
+                    )?;
                     *audio_next_pts += opus_frame_size as i64;
                 }
                 Err(ffmpeg_next::Error::Other { errno })
@@ -602,7 +766,7 @@ fn flush_audio_path(
         debug!(%job_id, "Processing final {} audio samples per channel by padding.", remaining_sample_count_per_channel);
         let total_f32s_in_opus_frame = opus_frame_size * opus_num_channels;
         let mut final_frame_samples: Vec<f32> = Vec::with_capacity(total_f32s_in_opus_frame);
-        final_frame_samples.extend_from_slice(&audio_sample_buffer);
+        final_frame_samples.extend_from_slice(audio_sample_buffer);
         let padding_needed_f32s = total_f32s_in_opus_frame - final_frame_samples.len();
         if padding_needed_f32s > 0 {
             final_frame_samples.resize(total_f32s_in_opus_frame, 0.0f32);
@@ -638,15 +802,14 @@ fn flush_audio_path(
             // Use loop with match for draining
             match enc_audio.receive_packet(&mut encoded_audio_packet) {
                 Ok(_) => {
-                    encoded_audio_packet.set_stream(out_audio_stream_idx);
-                    encoded_audio_packet.set_pts(Some(*audio_next_pts));
-                    encoded_audio_packet.set_dts(Some(*audio_next_pts));
-                    encoded_audio_packet.set_duration(opus_frame_size as i64);
-                    if encoded_audio_packet.write_interleaved(octx).is_err() {
-                        return Err(anyhow!(
-                            "Output: Error writing final interleaved audio packet"
-                        ));
-                    }
+                    handle_encoded_audio_packet(
+                        job_id,
+                        &mut encoded_audio_packet,
+                        out_audio_stream_idx,
+                        *audio_next_pts,
+                        opus_frame_size as i64,
+                        octx,
+                    )?;
                     *audio_next_pts += opus_frame_size as i64;
                 }
                 Err(ffmpeg_next::Error::Other { errno })
@@ -674,23 +837,33 @@ fn flush_audio_path(
     debug!(%job_id, "Sending EOF to Opus audio encoder...");
     enc_audio.send_eof()?;
     let mut encoded_audio_packet_eof = Packet::empty();
+    let mut encoder_final_drain_packets = 0;
     loop {
         match enc_audio.receive_packet(&mut encoded_audio_packet_eof) {
             Ok(_) => {
-                encoded_audio_packet_eof.set_stream(out_audio_stream_idx);
-                encoded_audio_packet_eof.set_pts(Some(*audio_next_pts));
-                encoded_audio_packet_eof.set_dts(Some(*audio_next_pts));
+                encoder_final_drain_packets += 1;
                 let packet_duration = if encoded_audio_packet_eof.duration() > 0 {
                     encoded_audio_packet_eof.duration()
                 } else {
                     opus_frame_size as i64
                 };
-                encoded_audio_packet_eof.set_duration(packet_duration);
+                handle_encoded_audio_packet(
+                    job_id,
+                    &mut encoded_audio_packet_eof,
+                    out_audio_stream_idx,
+                    *audio_next_pts,
+                    packet_duration, // Use determined packet_duration
+                    octx,
+                )?;
 
-                if encoded_audio_packet_eof.write_interleaved(octx).is_err() {
-                    /* handle error */
-                    return Err(anyhow!("Output: Error writing final EOF audio packet"));
-                }
+                trace!(
+                    %job_id,
+                    "Audio packet from Step 5 (encoder EOF drain, packet #{}): audio_next_pts={}, PTS_seconds={:.3}s, packet_duration_used={}",
+                    encoder_final_drain_packets,
+                    *audio_next_pts,
+                    *audio_next_pts as f64 / OPUS_TARGET_RATE as f64,
+                    packet_duration
+                );
                 *audio_next_pts += packet_duration;
             }
             Err(ffmpeg_next::Error::Eof) => {
@@ -706,7 +879,11 @@ fn flush_audio_path(
         }
     } // End encoder EOF drain loop
 
-    debug!(%job_id, "Audio path flushed successfully. Final audio PTS: {}", *audio_next_pts);
+    debug!(
+        %job_id,
+        "Audio path flushed successfully. Final audio_next_pts value after all processing: {} ({:.3}s).",
+        *audio_next_pts, *audio_next_pts as f64 / OPUS_TARGET_RATE as f64
+    );
     Ok(())
 }
 
@@ -845,14 +1022,16 @@ pub fn convert_to_vp9(job_id: &str, input: &Path, output: &Path) -> anyhow::Resu
                 }
                 let mut encoded_video_packet = Packet::empty();
                 while enc_video.receive_packet(&mut encoded_video_packet).is_ok() {
-                    encoded_video_packet.set_stream(out_video_stream_idx);
-                    encoded_video_packet.rescale_ts(
+                    if let Err(error) = handle_encoded_video_packet(
+                        job_id,
+                        &mut encoded_video_packet,
+                        out_video_stream_idx,
                         in_video_time_base,
-                        octx.stream(out_video_stream_idx).unwrap().time_base(),
-                    );
-                    if encoded_video_packet.write_interleaved(&mut octx).is_err() {
-                        error!(%job_id, "Output: Error writing interleaved video packet, stopping.");
-                        break 'main_loop;
+                        &mut octx,
+                    ) {
+                        error!(%job_id, ?error, "Failed to handle encoded video packet, Stopping.");
+                        // Consider breaking the main loop or handling the error appropriately
+                        break 'main_loop; // Make sure 'main_loop is the correct label for your outer loop
                     }
                 }
             }
@@ -902,15 +1081,17 @@ pub fn convert_to_vp9(job_id: &str, input: &Path, output: &Path) -> anyhow::Resu
                     }
                     let mut encoded_audio_packet = Packet::empty();
                     while enc_audio.receive_packet(&mut encoded_audio_packet).is_ok() {
-                        encoded_audio_packet.set_stream(out_audio_stream_idx);
-                        encoded_audio_packet.set_pts(Some(audio_next_pts));
-                        encoded_audio_packet.set_dts(Some(audio_next_pts)); // For many simple codecs, DTS=PTS
-                        encoded_audio_packet.set_duration(opus_frame_size as i64); // Duration in stream time_base units
-
-                        if encoded_audio_packet.write_interleaved(&mut octx).is_err() {
-                            error!(%job_id, "Output: Error writing interleaved audio packet, stopping.");
+                        if let Err(error) = handle_encoded_audio_packet(
+                            job_id,
+                            &mut encoded_audio_packet,
+                            out_audio_stream_idx,
+                            audio_next_pts, // Pass the current value of audio_next_pts
+                            opus_frame_size as i64, // Standard duration for Opus frames
+                            &mut octx,
+                        ) {
+                            error!(%job_id, ?error, "Output: Error writing interleaved audio packet, stopping.");
                             break 'main_loop;
-                        }
+                        };
                         audio_next_pts += opus_frame_size as i64; // Increment PTS for the next packet
                     }
                 }
