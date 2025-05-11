@@ -1,4 +1,4 @@
-use crate::{JobGenerator, StreamMap};
+use crate::{Job, JobGenerator, StreamMap};
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -9,15 +9,10 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, info, warn};
 
-pub(crate) struct JobTask {
-    pub(crate) id: String,
-    pub(crate) generator: JobGenerator,
-}
-
 #[derive(Clone)]
 pub(crate) struct AppState {
-    pub(crate) job_set: Arc<TokioMutex<BTreeSet<String>>>,
-    pub(crate) job_tx: UnboundedSender<JobTask>,
+    pub(crate) job_set: Arc<TokioMutex<BTreeSet<Job>>>,
+    pub(crate) job_tx: UnboundedSender<JobGenerator>,
 }
 
 impl AppState {
@@ -32,7 +27,7 @@ impl AppState {
         this
     }
 
-    fn handle_jobs(&self, rx: UnboundedReceiver<JobTask>) {
+    fn handle_jobs(&self, rx: UnboundedReceiver<JobGenerator>) {
         info!("Job handler started");
         let tx = self.job_tx.clone();
         let job_set = self.job_set.clone();
@@ -42,27 +37,24 @@ impl AppState {
             let rx = std::pin::pin!(rx);
             let mut rx = rx.fuse();
 
-            let mut jobs: StreamMap<'_, String, Result<(), JobTask>> = StreamMap::default();
+            let mut jobs: StreamMap<'_, String, Result<(), JobGenerator>> = StreamMap::default();
             loop {
                 debug!("Waiting for job");
                 futures::select! {
                     maybe_job = rx.next() => {
                         debug!(is_some = maybe_job.is_some() ,"Job received");
-                        let Some(JobTask {id, generator}) = maybe_job else {
+                        let Some(generator) = maybe_job else {
                             error!("Job handler finished");
                             break;
                         };
 
+                        let id = generator.id().to_string();
                         info!(%id, "Job started");
-                        let id_c = id.clone();
                         let task = async move {
                             let result = generator.gen_task().await;
                             let result = result.expect("Tokio task Join failed").map_err(|error| {
-                                error!(%error, %id_c, "Job process failed, retry later");
-                                JobTask {
-                                    id: id_c,
-                                    generator,
-                                }
+                                error!(%error, id = %generator.id(), "Job process failed, retry later");
+                                generator
                             });
 
                             if result.is_err() {
@@ -81,7 +73,7 @@ impl AppState {
                             info!("Job {id} completed successfully");
                             // clean up upload file & update job status
                             let mut js = job_set.lock().await;
-                            js.remove(&id);
+                            js.retain(|job| job.id() != id);
                             let dump = serde_json::to_string(&*js).unwrap();
                             // update jobs file
                             _ = tokio::fs::write(crate::JOB_FILE, dump).await;

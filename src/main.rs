@@ -1,11 +1,11 @@
 mod app_state;
-use app_state::{AppState, JobTask};
+use app_state::AppState;
 
-mod params;
-use params::{UploadParams, UploadResponse};
+mod job;
+use job::{JOB_FILE, Job, JobGenerator};
 
 mod routes;
-use routes::{JobGenerator, serve_video, upload_mp4_raw};
+use routes::{serve_video, spawn_hls_job, upload_mp4_raw};
 
 mod stream_map;
 use stream_map::StreamMap;
@@ -29,7 +29,6 @@ use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
-const JOB_FILE: &str = "jobs.json";
 const UPLOADS_DIR: &str = "uploads";
 
 #[tokio::main]
@@ -47,15 +46,12 @@ async fn main() {
             String::new()
         });
 
-    let pending = serde_json::from_str::<BTreeSet<String>>(&json).unwrap_or_default();
-    for filename in pending {
-        info!(%filename, "Loading pending job");
-        let upload_path = PathBuf::from("uploads").join(&filename);
-        let generator = JobGenerator::new(filename.clone(), upload_path);
-        _ = state.job_tx.unbounded_send(JobTask {
-            id: filename,
-            generator,
-        });
+    let pending = serde_json::from_str::<BTreeSet<Job>>(&json).unwrap_or_default();
+    for job in pending {
+        info!(job_id = %job.id(), "Loading pending job");
+        let upload_path = PathBuf::from("uploads").join(job.id());
+        let generator = JobGenerator::new(job, upload_path);
+        _ = state.job_tx.unbounded_send(generator);
     }
 
     // 创建 CORS layer
@@ -66,7 +62,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/upload", post(upload_mp4_raw))
-        .route("/videos/{*filename}", get(serve_video))
+        .route("/videos/{filename}", get(serve_video))
         .layer(cors)
         .layer(Extension(state));
 
