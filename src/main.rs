@@ -23,6 +23,7 @@ use axum::{
     extract::Extension,
     routing::{get, post},
 };
+use clap::Parser;
 use ffmpeg_next::{self as ffmpeg};
 use tokio::net::TcpListener;
 use tower_http::cors::Any;
@@ -31,8 +32,17 @@ use tracing::info;
 
 const UPLOADS_DIR: &str = "uploads";
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value_t = 32145)]
+    listen_on_port: u16,
+}
+
 #[tokio::main]
 async fn main() {
+    let Args { listen_on_port } = Args::parse();
+
     tracing_subscriber::fmt::init();
     ffmpeg::init().unwrap();
     let state = AppState::new();
@@ -66,8 +76,9 @@ async fn main() {
         .layer(cors)
         .layer(Extension(state));
 
-    info!("Listening on https://0.0.0.0:32145");
-    axum::serve(TcpListener::bind("0.0.0.0:32145").await.unwrap(), app)
+    let listen_on = format!("0.0.0.0:{listen_on_port}");
+    info!("Listening on https://{listen_on}");
+    axum::serve(TcpListener::bind(listen_on).await.unwrap(), app)
         .await
         .unwrap();
 }

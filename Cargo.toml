@@ -26,3 +26,4 @@ tokio-stream = "0.1.17"
 tower-http = { version = "0.6.3", features = ["cors"] }
 hyper = "1.6.0"
 num_cpus = "1.16.0"
+clap = { version = "4.5.38", features = ["derive"] }
