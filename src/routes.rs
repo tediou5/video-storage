@@ -14,7 +14,7 @@ use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::create_dir_all, io::AsyncSeekExt, sync::Mutex as TokioMutex};
 use tokio_util::io::ReaderStream;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 /// bytes per second (500 KB/s)
 const RATE_BYTES_PER_SEC: f64 = 500.0 * 1024.0;
@@ -147,6 +147,8 @@ pub(crate) async fn serve_video(
     let job_id = vals.first().unwrap();
 
     let path = PathBuf::from("videos").join(job_id).join(&filename);
+    debug!(%job_id, %filename, ?path, "Request server file");
+
     let Ok(mut fh) = tokio::fs::File::open(&path).await else {
         return Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
