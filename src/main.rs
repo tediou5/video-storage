@@ -1,11 +1,13 @@
 mod app_state;
-use app_state::{AppState, JobTask};
+use app_state::AppState;
 
-mod params;
-use params::{UploadParams, UploadResponse};
+mod job;
+use job::{JOB_FILE, Job, JobGenerator};
+
+mod middleware;
 
 mod routes;
-use routes::{JobGenerator, serve_video, upload_mp4_raw};
+use routes::{serve_video, upload_mp4_raw};
 
 mod stream_map;
 use stream_map::StreamMap;
@@ -14,7 +16,7 @@ mod token_bucket;
 use token_bucket::TokenBucket;
 
 mod utils;
-use utils::convert_to_hls;
+use utils::spawn_hls_job;
 
 use std::{collections::BTreeSet, path::PathBuf};
 
@@ -23,17 +25,26 @@ use axum::{
     extract::Extension,
     routing::{get, post},
 };
+use clap::Parser;
 use ffmpeg_next::{self as ffmpeg};
 use tokio::net::TcpListener;
 use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
-const JOB_FILE: &str = "jobs.json";
 const UPLOADS_DIR: &str = "uploads";
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value_t = 32145)]
+    listen_on_port: u16,
+}
 
 #[tokio::main]
 async fn main() {
+    let Args { listen_on_port } = Args::parse();
+
     tracing_subscriber::fmt::init();
     ffmpeg::init().unwrap();
     let state = AppState::new();
@@ -47,15 +58,12 @@ async fn main() {
             String::new()
         });
 
-    let pending = serde_json::from_str::<BTreeSet<String>>(&json).unwrap_or_default();
-    for filename in pending {
-        info!(%filename, "Loading pending job");
-        let upload_path = PathBuf::from("uploads").join(&filename);
-        let generator = JobGenerator::new(filename.clone(), upload_path);
-        _ = state.job_tx.unbounded_send(JobTask {
-            id: filename,
-            generator,
-        });
+    let pending = serde_json::from_str::<BTreeSet<Job>>(&json).unwrap_or_default();
+    for job in pending {
+        info!(job_id = %job.id(), "Loading pending job");
+        let upload_path = PathBuf::from("uploads").join(job.id());
+        let generator = JobGenerator::new(job, upload_path);
+        _ = state.job_tx.unbounded_send(generator);
     }
 
     // 创建 CORS layer
@@ -66,12 +74,14 @@ async fn main() {
 
     let app = Router::new()
         .route("/upload", post(upload_mp4_raw))
-        .route("/videos/{*filename}", get(serve_video))
+        .route("/videos/{filename}", get(serve_video))
+        .layer(axum::middleware::from_fn(middleware::log_request_errors))
         .layer(cors)
         .layer(Extension(state));
 
-    info!("Listening on https://0.0.0.0:32145");
-    axum::serve(TcpListener::bind("0.0.0.0:32145").await.unwrap(), app)
+    let listen_on = format!("0.0.0.0:{listen_on_port}");
+    info!("Listening on https://{listen_on}");
+    axum::serve(TcpListener::bind(listen_on).await.unwrap(), app)
         .await
         .unwrap();
 }

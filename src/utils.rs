@@ -1,3 +1,5 @@
+use crate::Job;
+
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -14,8 +16,6 @@ use ffmpeg_next::{ChannelLayout, Rational};
 use ffmpeg_next::{Dictionary, Packet, codec, format, media};
 use tracing::{debug, error, info, trace, warn};
 
-const CRF: &str = "38";
-
 // Opus target parameters
 const OPUS_TARGET_FORMAT: Sample = Sample::F32(format::sample::Type::Packed);
 const OPUS_TARGET_RATE: i32 = 48000; // 48kHz
@@ -28,6 +28,25 @@ static NUM_CPUS: LazyLock<usize> = LazyLock::new(|| {
     info!(num, "Detecting CPU cores");
     num
 });
+
+pub(crate) async fn spawn_hls_job(job: Job, upload_path: PathBuf) -> anyhow::Result<()> {
+    let temp_dir = PathBuf::from("/tmp").join(format!("tmp-{}", job.id()));
+    let out_dir = PathBuf::from("videos").join(job.id());
+    tokio::fs::create_dir_all(&temp_dir).await?;
+
+    let input_path = upload_path.clone();
+    tokio::task::spawn_blocking(move || {
+        convert_to_hls(&job, &input_path, &temp_dir)?;
+        std::fs::create_dir_all("videos")?;
+        // Remove existing directory if it exists
+        _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::rename(&temp_dir, &out_dir)?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await??;
+
+    Ok(())
+}
 
 // Helper function: checks if a Rational is valid (numerator and denominator are both > 0)
 fn is_rational_valid(r: Rational) -> bool {
@@ -170,11 +189,12 @@ fn get_valid_encoder_timebase(
 
 #[allow(clippy::field_reassign_with_default)]
 fn setup_vp9_video_encoder(
-    job_id: &str,
+    job: &Job,
     dec_video: &codec::decoder::Video,
     octx: &mut OutputContext,
     in_video_stream: &ffmpeg_next::Stream,
 ) -> anyhow::Result<(usize, codec::encoder::video::Encoder)> {
+    let Job { id: job_id, crf } = &job;
     debug!(%job_id, "Setting up VP9 video encoder...");
 
     let vp9_codec_finder = codec::encoder::find(codec::Id::VP9)
@@ -208,7 +228,7 @@ fn setup_vp9_video_encoder(
         frame_rate.numerator(), frame_rate.denominator());
 
     let mut opts = Dictionary::new();
-    opts.set("crf", CRF);
+    opts.set("crf", &crf.to_string());
     opts.set("b:v", "0");
     // VP9 options:
     // opts.set("row-mt", "1");
@@ -888,8 +908,9 @@ fn flush_audio_path(
 }
 
 /// Convert MP4 to VP9
-pub fn convert_to_vp9(job_id: &str, input: &Path, output: &Path) -> anyhow::Result<()> {
-    debug!(%job_id, ?input, ?output, crf = %CRF, "Converting to VP9");
+pub fn convert_to_vp9(job: &Job, input: &Path, output: &Path) -> anyhow::Result<()> {
+    let Job { id: job_id, crf } = job;
+    debug!(%job_id, %crf, ?input, ?output, "Converting to VP9");
     let mut ictx = format::input(input.to_str().unwrap())
         .map_err(|e| anyhow!("Failed to open input video: {e}"))?;
     let mut octx = format::output_as(output.to_str().unwrap(), "webm")
@@ -926,7 +947,7 @@ pub fn convert_to_vp9(job_id: &str, input: &Path, output: &Path) -> anyhow::Resu
 
     // Setup video encoder
     let (out_video_stream_idx, mut enc_video) =
-        setup_vp9_video_encoder(job_id, &dec_video, &mut octx, &in_video)?;
+        setup_vp9_video_encoder(job, &dec_video, &mut octx, &in_video)?;
 
     // Setup audio encoder and resampler
     let (
@@ -1135,13 +1156,14 @@ pub fn convert_to_vp9(job_id: &str, input: &Path, output: &Path) -> anyhow::Resu
     Ok(())
 }
 
-pub(crate) fn convert_to_hls(job_id: &str, input: &Path, out_dir: &Path) -> anyhow::Result<()> {
+pub(crate) fn convert_to_hls(job: &Job, input: &Path, out_dir: &Path) -> anyhow::Result<()> {
+    let job_id = job.id();
     let temp_vp9_dir = PathBuf::from("/tmp").join(format!("tmp-vp9-{job_id}"));
     std::fs::create_dir_all(&temp_vp9_dir)?;
 
     let vp9_file = temp_vp9_dir.join("vp9.webm");
     // convert to vp9
-    convert_to_vp9(job_id, input, &vp9_file)
+    convert_to_vp9(job, input, &vp9_file)
         .inspect_err(|error| error!(%error, "Failed to convert to vp9"))?;
     let input = vp9_file;
     let input_path = input.to_str().ok_or(anyhow!("Empty input path"))?;
@@ -1167,11 +1189,11 @@ pub(crate) fn convert_to_hls(job_id: &str, input: &Path, out_dir: &Path) -> anyh
     opts.set(
         "hls_segment_filename",
         &format!(
-            "{}/segment_%03d.m4s",
+            "{}/{job_id}-%03d.m4s",
             out_dir.to_str().ok_or(anyhow!("Empty output path"))?
         ),
     );
-    opts.set("hls_fmp4_init_filename", "init.mp4");
+    opts.set("hls_fmp4_init_filename", &format!("{job_id}-init.mp4"));
     opts.set("hls_segment_type", "fmp4");
 
     // codec copy

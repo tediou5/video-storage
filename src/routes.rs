@@ -1,4 +1,4 @@
-use crate::{AppState, JobTask, TokenBucket, UploadParams, UploadResponse, convert_to_hls};
+use crate::{AppState, Job, TokenBucket};
 
 use std::{convert::Infallible, io::Error as IoError, path::PathBuf, sync::Arc};
 
@@ -11,71 +11,74 @@ use axum::{
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
 use mime_guess::from_path;
-use tokio::{fs::create_dir_all, io::AsyncSeekExt, sync::Mutex as TokioMutex, task::JoinHandle};
+use serde::{Deserialize, Serialize};
+use tokio::{fs::create_dir_all, io::AsyncSeekExt, sync::Mutex as TokioMutex};
 use tokio_util::io::ReaderStream;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
-const JOB_FILE: &str = "jobs.json";
 /// bytes per second (500 KB/s)
 const RATE_BYTES_PER_SEC: f64 = 500.0 * 1024.0;
 
-pub(crate) struct JobGenerator {
-    id: String,
-    upload_path: PathBuf,
-}
-
-impl JobGenerator {
-    pub(crate) fn new(id: String, upload_path: PathBuf) -> Self {
-        Self { id, upload_path }
-    }
-
-    pub(crate) fn gen_task(&self) -> JoinHandle<anyhow::Result<()>> {
-        let upload_path = self.upload_path.clone();
-        let job_id = self.id.clone();
-        tokio::spawn(async move {
-            spawn_hls_job(upload_path, job_id.clone())
-                .await
-                .inspect_err(|error| error!(%job_id, %error, "Failed to process video"))
-        })
-    }
+#[derive(Serialize, Deserialize)]
+pub(crate) struct UploadResponse {
+    pub(crate) job_id: String,
+    pub(crate) message: String,
 }
 
 pub(crate) async fn upload_mp4_raw(
     Extension(state): Extension<AppState>,
-    Query(UploadParams { filename }): Query<UploadParams>,
+    Query(job): Query<Job>,
     body: Body,
 ) -> impl IntoResponse {
-    if state.job_set.lock().await.contains(&filename) {
+    let job_id = job.id().to_string();
+
+    if job.crf > 63 {
         return (
             StatusCode::BAD_REQUEST,
             Json(UploadResponse {
-                job_id: filename.clone(),
+                job_id: job.id,
+                message: "Invalid parameters: crf can only be set in the range 0-63".into(),
+            }),
+        );
+    }
+
+    if state.job_set.lock().await.contains(&job) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(UploadResponse {
+                job_id: job.id,
                 message: "already in-progress".into(),
             }),
         );
     }
-    if filename.is_empty() || filename.contains('/') {
+
+    if job_id.is_empty()
+        || job_id.contains('/')
+        || job_id.contains('-')
+        || job_id.contains('.')
+        || job_id.contains(' ')
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(UploadResponse {
-                job_id: filename.clone(),
-                message: "Invalid filename".into(),
+                job_id,
+                message: "Invalid filename, Cannot contain '/', '-', ' ' and '.'".into(),
             }),
         );
     }
 
-    info!(%filename, "Uploading file");
+    info!(%job_id, "Uploading file");
     let upload_dir = PathBuf::from(crate::UPLOADS_DIR);
     create_dir_all(&upload_dir).await.unwrap();
 
-    let upload_path = upload_dir.join(&filename);
+    let upload_path = upload_dir.join(&job_id);
     let Ok(mut file) = tokio::fs::File::create(&upload_path).await else {
-        error!(%filename, "Failed to create upload file");
+        error!(%job_id, "Failed to create upload job file");
         return (
             StatusCode::BAD_REQUEST,
             Json(UploadResponse {
-                job_id: filename.clone(),
-                message: "Failed to create upload file".into(),
+                job_id,
+                message: "Failed to create upload job file".into(),
             }),
         );
     };
@@ -84,65 +87,59 @@ pub(crate) async fn upload_mp4_raw(
     let mut body_stream = body.into_data_stream();
     while let Some(Ok(chunk)) = body_stream.next().await {
         if file.write_all(&chunk).await.is_err() {
-            // clean up upload file
-            error!(%filename, "Failed to write to upload file");
+            // clean up upload job file
+            error!(%job_id, "Failed to write to upload job file");
             let _ = tokio::fs::remove_file(&upload_path).await;
 
             return (
                 StatusCode::BAD_REQUEST,
                 Json(UploadResponse {
-                    job_id: filename.clone(),
-                    message: "Failed to write to upload file".into(),
+                    job_id,
+                    message: "Failed to write to upload job file".into(),
                 }),
             );
         }
     }
 
     let mut jobs = state.job_set.lock().await;
-    jobs.insert(filename.clone());
+    jobs.insert(job.clone());
     let dump = serde_json::to_string(&*jobs).unwrap();
-    tokio::fs::write(JOB_FILE, dump).await.unwrap();
-    info!(%filename, "File uploaded successfully, jobs set updated");
+    tokio::fs::write(crate::JOB_FILE, dump).await.unwrap();
+    info!(%job_id, "File uploaded successfully, jobs set updated");
 
-    let generator = JobGenerator::new(filename.clone(), upload_path);
+    let generator = crate::JobGenerator::new(job, upload_path);
 
-    _ = state.job_tx.unbounded_send(JobTask {
-        id: filename.clone(),
-        generator,
-    });
+    _ = state.job_tx.unbounded_send(generator);
 
     (
         StatusCode::ACCEPTED,
         Json(UploadResponse {
-            job_id: filename,
+            job_id,
             message: "Processing in background".into(),
         }),
     )
-}
-
-pub(crate) async fn spawn_hls_job(upload_path: PathBuf, job_id: String) -> anyhow::Result<()> {
-    let temp_dir = PathBuf::from("/tmp").join(format!("tmp-{job_id}"));
-    let out_dir = PathBuf::from("videos").join(&job_id);
-    create_dir_all(&temp_dir).await?;
-
-    let job_id_c = job_id.clone();
-    let input_path = upload_path.clone();
-    tokio::task::spawn_blocking(move || {
-        convert_to_hls(&job_id_c, &input_path, &temp_dir)?;
-        std::fs::create_dir_all("videos")?;
-        std::fs::rename(&temp_dir, &out_dir)?;
-        Ok::<(), anyhow::Error>(())
-    })
-    .await??;
-
-    Ok(())
 }
 
 pub(crate) async fn serve_video(
     AxumPath(filename): AxumPath<String>,
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
-    let path = PathBuf::from("videos").join(&filename);
+    let vals = filename.split(&['-', '.'][..]).collect::<Vec<_>>();
+
+    let len = vals.len();
+    if !(2..=3).contains(&len) {
+        warn!(%filename, "Invalid filename");
+        return Ok(Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(Body::from("Invalid filename"))
+            .unwrap());
+    }
+
+    let job_id = vals[0];
+
+    let path = PathBuf::from("videos").join(job_id).join(&filename);
+    debug!(%job_id, %filename, ?path, "Request server file");
+
     let Ok(mut fh) = tokio::fs::File::open(&path).await else {
         return Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
