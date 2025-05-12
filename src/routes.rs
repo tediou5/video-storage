@@ -14,7 +14,7 @@ use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::create_dir_all, io::AsyncSeekExt, sync::Mutex as TokioMutex};
 use tokio_util::io::ReaderStream;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// bytes per second (500 KB/s)
 const RATE_BYTES_PER_SEC: f64 = 500.0 * 1024.0;
@@ -52,12 +52,17 @@ pub(crate) async fn upload_mp4_raw(
         );
     }
 
-    if job_id.is_empty() || job_id.contains('/') || job_id.contains('.') || job_id.contains(' ') {
+    if job_id.is_empty()
+        || job_id.contains('/')
+        || job_id.contains('-')
+        || job_id.contains('.')
+        || job_id.contains(' ')
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(UploadResponse {
                 job_id,
-                message: "Invalid filename, Cannot contain '/', ' ' and '.'".into(),
+                message: "Invalid filename, Cannot contain '/', '-', ' ' and '.'".into(),
             }),
         );
     }
@@ -119,14 +124,18 @@ pub(crate) async fn serve_video(
     AxumPath(filename): AxumPath<String>,
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
-    let vals = filename.split('.').collect::<Vec<_>>();
-    if vals.len() != 2 {
+    let vals = filename.split(&['-', '.'][..]).collect::<Vec<_>>();
+
+    let len = vals.len();
+    if !(2..=3).contains(&len) {
+        warn!(%filename, "Invalid filename");
         return Ok(Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .body(Body::from("Invalid filename"))
             .unwrap());
     }
-    let job_id = vals.first().unwrap();
+
+    let job_id = vals[0];
 
     let path = PathBuf::from("videos").join(job_id).join(&filename);
     debug!(%job_id, %filename, ?path, "Request server file");

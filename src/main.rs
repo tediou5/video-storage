@@ -4,6 +4,8 @@ use app_state::AppState;
 mod job;
 use job::{JOB_FILE, Job, JobGenerator};
 
+mod middleware;
+
 mod routes;
 use routes::{serve_video, upload_mp4_raw};
 
@@ -73,6 +75,7 @@ async fn main() {
     let app = Router::new()
         .route("/upload", post(upload_mp4_raw))
         .route("/videos/{filename}", get(serve_video))
+        .layer(axum::middleware::from_fn(middleware::log_request_errors))
         .layer(cors)
         .layer(Extension(state));
 

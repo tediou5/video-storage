@@ -38,6 +38,8 @@ pub(crate) async fn spawn_hls_job(job: Job, upload_path: PathBuf) -> anyhow::Res
     tokio::task::spawn_blocking(move || {
         convert_to_hls(&job, &input_path, &temp_dir)?;
         std::fs::create_dir_all("videos")?;
+        // Remove existing directory if it exists
+        _ = std::fs::remove_dir_all(&out_dir);
         std::fs::rename(&temp_dir, &out_dir)?;
         Ok::<(), anyhow::Error>(())
     })
@@ -1187,11 +1189,11 @@ pub(crate) fn convert_to_hls(job: &Job, input: &Path, out_dir: &Path) -> anyhow:
     opts.set(
         "hls_segment_filename",
         &format!(
-            "{}/segment_%03d.m4s",
+            "{}/{job_id}-%03d.m4s",
             out_dir.to_str().ok_or(anyhow!("Empty output path"))?
         ),
     );
-    opts.set("hls_fmp4_init_filename", "init.mp4");
+    opts.set("hls_fmp4_init_filename", &format!("{job_id}-init.mp4"));
     opts.set("hls_segment_type", "fmp4");
 
     // codec copy
