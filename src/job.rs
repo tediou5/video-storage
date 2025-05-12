@@ -35,9 +35,10 @@ impl JobGenerator {
         let upload_path = self.upload_path.clone();
         let job = self.job.clone();
         tokio::spawn(async move {
-            crate::spawn_hls_job(upload_path, job.id().to_string())
+            let job_id = job.id().to_string();
+            crate::spawn_hls_job(job, upload_path)
                 .await
-                .inspect_err(|error| error!(job_id = %job.id(), %error, "Failed to process video"))
+                .inspect_err(|error| error!(%job_id, %error, "Failed to process video"))
         })
     }
 }

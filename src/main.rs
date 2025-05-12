@@ -5,7 +5,7 @@ mod job;
 use job::{JOB_FILE, Job, JobGenerator};
 
 mod routes;
-use routes::{serve_video, spawn_hls_job, upload_mp4_raw};
+use routes::{serve_video, upload_mp4_raw};
 
 mod stream_map;
 use stream_map::StreamMap;
@@ -14,7 +14,7 @@ mod token_bucket;
 use token_bucket::TokenBucket;
 
 mod utils;
-use utils::convert_to_hls;
+use utils::spawn_hls_job;
 
 use std::{collections::BTreeSet, path::PathBuf};
 

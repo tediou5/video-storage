@@ -1,4 +1,4 @@
-use crate::{AppState, Job, TokenBucket, convert_to_hls};
+use crate::{AppState, Job, TokenBucket};
 
 use std::{convert::Infallible, io::Error as IoError, path::PathBuf, sync::Arc};
 
@@ -113,24 +113,6 @@ pub(crate) async fn upload_mp4_raw(
             message: "Processing in background".into(),
         }),
     )
-}
-
-pub(crate) async fn spawn_hls_job(upload_path: PathBuf, job_id: String) -> anyhow::Result<()> {
-    let temp_dir = PathBuf::from("/tmp").join(format!("tmp-{job_id}"));
-    let out_dir = PathBuf::from("videos").join(&job_id);
-    create_dir_all(&temp_dir).await?;
-
-    let job_id_c = job_id.clone();
-    let input_path = upload_path.clone();
-    tokio::task::spawn_blocking(move || {
-        convert_to_hls(&job_id_c, &input_path, &temp_dir)?;
-        std::fs::create_dir_all("videos")?;
-        std::fs::rename(&temp_dir, &out_dir)?;
-        Ok::<(), anyhow::Error>(())
-    })
-    .await??;
-
-    Ok(())
 }
 
 pub(crate) async fn serve_video(
