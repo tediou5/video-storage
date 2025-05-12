@@ -86,7 +86,7 @@ impl AppState {
                                 info!(%id, ?upload_path, "Upload file removed");
                             };
                             let temp_vp9_dir = PathBuf::from("/tmp").join(format!("tmp-vp9-{id}"));
-                            let vp9_file = temp_vp9_dir.join("vp9.mp4");
+                            let vp9_file = temp_vp9_dir.join("vp9.webm");
                             if let Err(error) = tokio::fs::remove_file(&vp9_file).await {
                                 error!(%error, %id, ?vp9_file, "Failed to remove tmp vp9 file");
                             } else {
