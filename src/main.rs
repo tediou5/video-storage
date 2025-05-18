@@ -39,15 +39,20 @@ const UPLOADS_DIR: &str = "uploads";
 struct Args {
     #[arg(short, long, default_value_t = 32145)]
     listen_on_port: u16,
+    #[arg(short, long, default_value_t = 5)]
+    permits: usize,
 }
 
 #[tokio::main]
 async fn main() {
-    let Args { listen_on_port } = Args::parse();
+    let Args {
+        listen_on_port,
+        permits,
+    } = Args::parse();
 
     tracing_subscriber::fmt::init();
     ffmpeg::init().unwrap();
-    let state = AppState::new();
+    let state = AppState::new(permits);
 
     // load pending jobs from file
     let json = tokio::fs::read_to_string(JOB_FILE)

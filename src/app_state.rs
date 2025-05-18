@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::{Mutex as TokioMutex, Semaphore};
 use tracing::{debug, error, info, warn};
 
 #[derive(Clone)]
@@ -16,21 +16,22 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(permits: usize) -> Self {
         let (tx, rx) = unbounded();
         let this = Self {
             job_set: Arc::default(),
             job_tx: tx,
         };
 
-        this.handle_jobs(rx);
+        this.handle_jobs(rx, permits);
         this
     }
 
-    fn handle_jobs(&self, rx: UnboundedReceiver<JobGenerator>) {
-        info!("Job handler started");
+    fn handle_jobs(&self, rx: UnboundedReceiver<JobGenerator>, permits: usize) {
+        info!(permits, "Job handler started");
         let tx = self.job_tx.clone();
         let job_set = self.job_set.clone();
+        let semaphore = Arc::new(Semaphore::new(permits));
 
         tokio::spawn(async move {
             debug!("Job handler started #1");
@@ -49,8 +50,13 @@ impl AppState {
                         };
 
                         let id = generator.id().to_string();
-                        info!(%id, "Job started");
+                        let semaphore_c = semaphore.clone();
                         let task = async move {
+                            debug!(id = %generator.id(), "Job wait for permit");
+
+                            let _permit = semaphore_c.acquire().await.unwrap();
+                            info!(id = %generator.id(), "Job started");
+
                             let result = generator.gen_task().await;
                             let result = result.expect("Tokio task Join failed").map_err(|error| {
                                 error!(%error, id = %generator.id(), "Job process failed, retry later");
