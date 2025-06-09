@@ -1,4 +1,4 @@
-use crate::Job;
+use crate::{Job, VIDEOS_DIR};
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -31,16 +31,25 @@ static NUM_CPUS: LazyLock<usize> = LazyLock::new(|| {
 
 pub(crate) async fn spawn_hls_job(job: Job, upload_path: PathBuf) -> anyhow::Result<()> {
     let temp_dir = PathBuf::from("/tmp").join(format!("tmp-{}", job.id()));
-    let out_dir = PathBuf::from("videos").join(job.id());
+    let out_dir = PathBuf::from(VIDEOS_DIR).join(job.id());
     tokio::fs::create_dir_all(&temp_dir).await?;
 
     let input_path = upload_path.clone();
     tokio::task::spawn_blocking(move || {
         convert_to_hls(&job, &input_path, &temp_dir)?;
-        std::fs::create_dir_all("videos")?;
-        // Remove existing directory if it exists
+        std::fs::create_dir_all(VIDEOS_DIR)?;
+        // Remove existing directory if it exists and copy the temp directory to the output directory
         _ = std::fs::remove_dir_all(&out_dir);
-        std::fs::rename(&temp_dir, &out_dir)?;
+        _ = std::fs::create_dir_all(&out_dir);
+        std::fs::copy(&temp_dir, &out_dir)?;
+
+        // Clean up the temporary directory
+        _ = std::fs::remove_dir_all(&temp_dir);
+        info!(
+            job_id = job.id(),
+            output_dir = ?out_dir.display(),
+            "HLS conversion completed successfully."
+        );
         Ok::<(), anyhow::Error>(())
     })
     .await??;

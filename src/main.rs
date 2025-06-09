@@ -7,7 +7,7 @@ use job::{JOB_FILE, Job, JobGenerator};
 mod middleware;
 
 mod routes;
-use routes::{serve_video, upload_mp4_raw};
+use routes::{serve_video, serve_video_object, upload_files, upload_mp4_raw};
 
 mod stream_map;
 use stream_map::StreamMap;
@@ -33,6 +33,8 @@ use tower_http::cors::CorsLayer;
 use tracing::info;
 
 const UPLOADS_DIR: &str = "uploads";
+const VIDEOS_DIR: &str = "videos";
+const VIDEO_OBJECTS_DIR: &str = "video-objects";
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -80,12 +82,14 @@ async fn main() {
     let app = Router::new()
         .route("/upload", post(upload_mp4_raw))
         .route("/videos/{filename}", get(serve_video))
+        .route("/upload-objects", post(upload_files))
+        .route("/objects/{job_id}/{filename}", get(serve_video_object))
         .layer(axum::middleware::from_fn(middleware::log_request_errors))
         .layer(cors)
         .layer(Extension(state));
 
     let listen_on = format!("0.0.0.0:{listen_on_port}");
-    info!("Listening on https://{listen_on}");
+    info!("Listening on {listen_on}");
     axum::serve(TcpListener::bind(listen_on).await.unwrap(), app)
         .await
         .unwrap();
