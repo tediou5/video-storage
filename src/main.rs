@@ -32,6 +32,7 @@ use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
+const TEMP_DIR: &str = "temp";
 const UPLOADS_DIR: &str = "uploads";
 const VIDEOS_DIR: &str = "videos";
 const VIDEO_OBJECTS_DIR: &str = "video-objects";
