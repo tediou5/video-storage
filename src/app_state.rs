@@ -91,12 +91,12 @@ impl AppState {
                             } else {
                                 info!(%id, ?upload_path, "Upload file removed");
                             };
-                            let temp_vp9_dir = PathBuf::from("/tmp").join(format!("tmp-vp9-{id}"));
-                            let vp9_file = temp_vp9_dir.join("vp9.webm");
-                            if let Err(error) = tokio::fs::remove_file(&vp9_file).await {
-                                error!(%error, %id, ?vp9_file, "Failed to remove tmp vp9 file");
+                            let temp_vp9_dir = PathBuf::from(crate::TEMP_DIR).join(format!("tmp-vp9-{id}"));
+                            // let vp9_file = temp_vp9_dir.join("vp9.webm");
+                            if let Err(error) = tokio::fs::remove_dir_all(&temp_vp9_dir).await {
+                                error!(%error, %id, ?temp_vp9_dir, "Failed to remove tmp vp9 dir");
                             } else {
-                                info!(%id, ?vp9_file, "Tmp vp9 file removed");
+                                info!(%id, ?temp_vp9_dir, "Tmp vp9 dir removed");
                             };
 
                             continue;
