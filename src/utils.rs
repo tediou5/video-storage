@@ -924,7 +924,7 @@ pub fn convert_to_vp9_variant(
     target_height: u32,
 ) -> anyhow::Result<()> {
     let Job { id: job_id, crf } = job;
-    debug!(%job_id, %crf, ?input, ?output, "Converting to {target_height}P VP9 variant");
+    debug!(%job_id, %crf, ?input, ?output, "Converting to {target_width}P VP9 variant");
 
     let mut ictx = format::input(input.to_str().unwrap())
         .map_err(|e| anyhow!("Failed to open input video: {e}"))?;
@@ -1213,7 +1213,7 @@ pub(crate) fn create_master_playlist(
         content.push_str(&format!(
             "#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={width}x{height},CODECS=\"vp09.00.51.08.01.01.01.01.00,opus\"\n"
         ));
-        content.push_str(&format!("{height}/{job_id}.m3u8\n"));
+        content.push_str(&format!("{width}/{job_id}.m3u8\n"));
     }
 
     file.write_all(content.as_bytes())?;
@@ -1230,17 +1230,17 @@ pub(crate) fn convert_to_target_hls(
     out_dir: &Path,
 ) -> anyhow::Result<()> {
     let job_id = job.id();
-    let vp9_file = temp_dir.join(format!("{target_height}P.webm"));
-    let out_dir = out_dir.join(target_height.to_string());
+    let vp9_file = temp_dir.join(format!("{target_width}P.webm"));
+    let out_dir = out_dir.join(target_width.to_string());
     std::fs::create_dir_all(&out_dir)?;
 
     // convert to vp9
     convert_to_vp9_variant(job, input, &vp9_file, target_width, target_height)
-        .inspect_err(|error| error!(%error, "Failed to convert to {target_height}P vp9"))?;
+        .inspect_err(|error| error!(%error, "Failed to convert to {target_width}P vp9"))?;
     let input = vp9_file;
     let input_path = input.to_str().ok_or(anyhow!("Empty input path"))?;
 
-    debug!(%job_id, ?input, ?out_dir, "Converting to {target_height}P HLS");
+    debug!(%job_id, ?input, ?out_dir, "Converting to {target_width}P HLS");
 
     // input context
     let mut open_opts = Dictionary::new();
