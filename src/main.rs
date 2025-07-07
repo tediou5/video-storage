@@ -1,4 +1,5 @@
 mod app_state;
+mod bucket;
 use app_state::AppState;
 
 mod job;
@@ -36,6 +37,8 @@ const TEMP_DIR: &str = "temp";
 const UPLOADS_DIR: &str = "uploads";
 const VIDEOS_DIR: &str = "videos";
 const VIDEO_OBJECTS_DIR: &str = "video-objects";
+const RESOLUTIONS: [(u32, u32); 3] = [(720, 1280), (540, 960), (480, 854)];
+const BANDWIDTHS: [u32; 3] = [2500000, 1500000, 1000000];
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -82,7 +85,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/upload", post(upload_mp4_raw))
-        .route("/videos/{filename}", get(serve_video))
+        .route("/videos/{*filename}", get(serve_video))
         .route("/upload-objects", post(upload_files))
         .route("/objects/{job_id}/{filename}", get(serve_video_object))
         .layer(axum::middleware::from_fn(middleware::log_request_errors))

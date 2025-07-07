@@ -1,5 +1,6 @@
-use crate::{Job, TEMP_DIR, VIDEOS_DIR};
+use crate::{BANDWIDTHS, Job, RESOLUTIONS, TEMP_DIR, VIDEOS_DIR};
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -36,7 +37,7 @@ pub(crate) async fn spawn_hls_job(job: Job, upload_path: PathBuf) -> anyhow::Res
 
     let input_path = upload_path.clone();
     tokio::task::spawn_blocking(move || {
-        convert_to_hls(&job, &input_path, &temp_dir)?;
+        create_master_playlist(&job, &input_path, &temp_dir)?;
         std::fs::create_dir_all(VIDEOS_DIR)?;
         // Remove existing directory if it exists
         _ = std::fs::remove_dir_all(&out_dir);
@@ -196,11 +197,13 @@ fn get_valid_encoder_timebase(
 fn setup_vp9_video_encoder(
     job: &Job,
     dec_video: &codec::decoder::Video,
+    target_width: u32,
+    target_height: u32,
     octx: &mut OutputContext,
     in_video_stream: &ffmpeg_next::Stream,
 ) -> anyhow::Result<(usize, codec::encoder::video::Encoder)> {
     let Job { id: job_id, crf } = &job;
-    debug!(%job_id, "Setting up VP9 video encoder...");
+    debug!(%job_id, target_width, target_height, "Setting up VP9 video encoder...");
 
     let vp9_codec_finder = codec::encoder::find(codec::Id::VP9)
         .ok_or_else(|| anyhow!("VP9 Encoder: Codec not found"))?;
@@ -219,8 +222,8 @@ fn setup_vp9_video_encoder(
     enc_config.set_threading(threading_config);
 
     enc_config.set_format(YUV420P);
-    enc_config.set_width(dec_video.width());
-    enc_config.set_height(dec_video.height());
+    enc_config.set_width(target_width);
+    enc_config.set_height(target_height);
 
     let time_base = get_valid_encoder_timebase(in_video_stream, dec_video)?;
     enc_config.set_time_base(time_base);
@@ -912,10 +915,17 @@ fn flush_audio_path(
     Ok(())
 }
 
-/// Convert MP4 to VP9
-pub fn convert_to_vp9(job: &Job, input: &Path, output: &Path) -> anyhow::Result<()> {
+/// Convert MP4 to a VP9 variant of a specific height.
+pub fn convert_to_vp9_variant(
+    job: &Job,
+    input: &Path,
+    output: &Path,
+    target_width: u32,
+    target_height: u32,
+) -> anyhow::Result<()> {
     let Job { id: job_id, crf } = job;
-    debug!(%job_id, %crf, ?input, ?output, "Converting to VP9");
+    debug!(%job_id, %crf, ?input, ?output, "Converting to {target_height}P VP9 variant");
+
     let mut ictx = format::input(input.to_str().unwrap())
         .map_err(|e| anyhow!("Failed to open input video: {e}"))?;
     let mut octx = format::output_as(output.to_str().unwrap(), "webm")
@@ -940,19 +950,28 @@ pub fn convert_to_vp9(job: &Job, input: &Path, output: &Path) -> anyhow::Result<
     let codec = codec::context::Context::from_parameters(codec_params)?;
     let mut dec_audio = codec.decoder().audio()?;
 
+    let original_width = dec_video.width();
+    let original_height = dec_video.height();
+
     let mut scaler = Scaler::get(
         dec_video.format(),
-        dec_video.width(),
-        dec_video.height(),
+        original_width,
+        original_height,
         YUV420P,
-        dec_video.width(),
-        dec_video.height(),
+        target_width,
+        target_height,
         Flags::BILINEAR,
     )?;
 
     // Setup video encoder
-    let (out_video_stream_idx, mut enc_video) =
-        setup_vp9_video_encoder(job, &dec_video, &mut octx, &in_video)?;
+    let (out_video_stream_idx, mut enc_video) = setup_vp9_video_encoder(
+        job,
+        &dec_video,
+        target_width,
+        target_height,
+        &mut octx,
+        &in_video,
+    )?;
 
     // Setup audio encoder and resampler
     let (
@@ -981,11 +1000,8 @@ pub fn convert_to_vp9(job: &Job, input: &Path, output: &Path) -> anyhow::Result<
     let mut scaled_video_frame = frame::Video::empty();
     let mut decoded_audio_frame = frame::Audio::empty();
     let mut audio_sample_buffer: Vec<f32> = Vec::new();
-    let mut opus_input_frame = frame::Audio::new(
-        OPUS_TARGET_FORMAT, // Use const
-        opus_frame_size,
-        OPUS_TARGET_LAYOUT, // Use const
-    );
+    let mut opus_input_frame =
+        frame::Audio::new(OPUS_TARGET_FORMAT, opus_frame_size, OPUS_TARGET_LAYOUT);
 
     info!(%job_id, "Starting packet processing loop. Opus frame size: {}, Opus channels: {}", opus_frame_size, opus_num_channels);
 
@@ -1019,7 +1035,7 @@ pub fn convert_to_vp9(job: &Job, input: &Path, output: &Path) -> anyhow::Result<
                             let current_s = current_video_ts_us as f64 / 1_000_000.0;
                             let total_s = total_duration_us as f64 / 1_000_000.0;
                             info!(
-                                %job_id,
+                                %job_id, target_width, target_height,
                                 "Conversion Progress: {:.1}% ({:.1}s / {:.1}s processed)",
                                 percent, current_s, total_s
                             );
@@ -1161,19 +1177,70 @@ pub fn convert_to_vp9(job: &Job, input: &Path, output: &Path) -> anyhow::Result<
     Ok(())
 }
 
-pub(crate) fn convert_to_hls(job: &Job, input: &Path, out_dir: &Path) -> anyhow::Result<()> {
+pub(crate) fn create_master_playlist(
+    job: &Job,
+    input: &Path,
+    out_dir: &Path,
+) -> anyhow::Result<()> {
     let job_id = job.id();
-    let temp_vp9_dir = PathBuf::from("/tmp").join(format!("tmp-vp9-{job_id}"));
+    let temp_vp9_dir = PathBuf::from(TEMP_DIR).join(format!("tmp-vp9-{job_id}"));
     std::fs::create_dir_all(&temp_vp9_dir)?;
 
-    let vp9_file = temp_vp9_dir.join("vp9.webm");
+    for (width, height) in RESOLUTIONS {
+        // Convert to target height VP9 variant
+        convert_to_target_hls(job, input, &temp_vp9_dir, width, height, out_dir)
+            .inspect_err(|error| error!(%error, "Failed to convert to {width}x{height}P HLS"))?;
+    }
+
+    let master_playlist_path = out_dir.join(format!("{}.m3u8", job_id));
+    let mut file = std::fs::File::create(&master_playlist_path)?;
+
+    let mut content = String::new();
+    content.push_str("#EXTM3U\n");
+    content.push_str("#EXT-X-VERSION:3\n");
+    content.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
+
+    // #EXTM3U
+    // #EXT-X-VERSION:3
+    // #EXT-X-INDEPENDENT-SEGMENTS
+    // #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
+    // 720/{job-id}.m3u8
+    // #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=960x540
+    // 540/{job-id}.m3u8
+    // #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=854x480
+    // 480/{job-id}.m3u8
+    for ((width, height), bandwidth) in RESOLUTIONS.iter().zip(BANDWIDTHS.iter()) {
+        content.push_str(&format!(
+            "#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={width}x{height},CODECS=\"vp09.00.51.08.01.01.01.01.00,opus\"\n"
+        ));
+        content.push_str(&format!("{height}/{job_id}.m3u8\n"));
+    }
+
+    file.write_all(content.as_bytes())?;
+    info!(%job_id, "Master playlist created at: {:?}", master_playlist_path);
+    Ok(())
+}
+
+pub(crate) fn convert_to_target_hls(
+    job: &Job,
+    input: &Path,
+    temp_dir: &Path,
+    target_width: u32,
+    target_height: u32,
+    out_dir: &Path,
+) -> anyhow::Result<()> {
+    let job_id = job.id();
+    let vp9_file = temp_dir.join(format!("{target_height}P.webm"));
+    let out_dir = out_dir.join(target_height.to_string());
+    std::fs::create_dir_all(&out_dir)?;
+
     // convert to vp9
-    convert_to_vp9(job, input, &vp9_file)
-        .inspect_err(|error| error!(%error, "Failed to convert to vp9"))?;
+    convert_to_vp9_variant(job, input, &vp9_file, target_width, target_height)
+        .inspect_err(|error| error!(%error, "Failed to convert to {target_height}P vp9"))?;
     let input = vp9_file;
     let input_path = input.to_str().ok_or(anyhow!("Empty input path"))?;
 
-    debug!(%job_id, ?input, ?out_dir, "Converting to HLS");
+    debug!(%job_id, ?input, ?out_dir, "Converting to {target_height}P HLS");
 
     // input context
     let mut open_opts = Dictionary::new();

@@ -135,11 +135,15 @@ pub(crate) async fn serve_video(
             .unwrap());
     }
 
-    let job_id = vals[0];
+    let mut job_id = vals[0];
 
-    let path = PathBuf::from(crate::VIDEOS_DIR)
-        .join(job_id)
-        .join(&filename);
+    if let Some((_h, jid)) = vals[0].split_once("/") {
+        job_id = jid;
+    };
+
+    let mut path = PathBuf::from(crate::VIDEOS_DIR).join(job_id);
+
+    path = path.join(&filename);
     debug!(%job_id, %filename, ?path, "Request server file");
 
     let Ok(mut fh) = tokio::fs::File::open(&path).await else {
