@@ -1,7 +1,11 @@
-use std::collections::HashMap;
+use std::fs::Metadata;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use futures::lock::Mutex;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+use walkdir::DirEntry;
 
 #[allow(dead_code)]
 pub struct Bucket {
@@ -9,69 +13,77 @@ pub struct Bucket {
 }
 
 #[allow(dead_code)]
+impl Bucket {
+    pub async fn join<P: AsRef<Path>>(&mut self, path: P) -> BucketGuard {
+        let inner = self.inner.clone();
+        let path = inner.lock().await.path.join(path);
+        BucketGuard { path, inner }
+    }
+}
+
+pub trait BucketEntry {
+    fn used(&self) -> usize;
+}
+
+fn entry_size(entry: DirEntry) -> usize {
+    entry.metadata().as_ref().map_or(0, Metadata::len) as usize
+}
+
+impl<P: AsRef<Path>> BucketEntry for P {
+    fn used(&self) -> usize {
+        walkdir::WalkDir::new(self)
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(entry_size)
+            .sum()
+    }
+}
+
+#[allow(dead_code)]
+pub struct BucketGuard {
+    path: PathBuf,
+    inner: Arc<Mutex<BucketInner>>,
+}
+
+#[allow(dead_code)]
+impl Drop for BucketGuard {
+    fn drop(&mut self) {
+        let used = self.path.used();
+        let mut inner = self.inner.blocking_lock();
+        inner.used += used;
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct BucketInner {
     id: String,
     used: usize,
     capacity: usize,
-
-    objects: HashMap<String, usize>, // object_id -> size
+    path: PathBuf,
 }
 
 #[allow(dead_code)]
 impl BucketInner {
-    fn new(id: String, capacity: usize) -> Self {
+    fn new(id: String, capacity: usize, path: PathBuf) -> Self {
         Self {
             id,
             used: 0,
             capacity,
-            objects: HashMap::new(),
+            path,
         }
     }
 
-    pub fn load(inner: Self) -> Self {
-        // TODO: check file system for existing objects
-        // and recompute used size
+    fn load(inner: Self) -> Self {
         inner.recompute_used()
     }
 
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    pub fn recompute_used(mut self) -> Self {
-        let used = self.objects.values().sum::<usize>();
-        self.used = used;
+    fn recompute_used(mut self) -> Self {
+        self.used = BucketEntry::used(&self.path);
         self
     }
 
-    pub fn used(&self) -> usize {
-        self.used
-    }
-
-    pub fn available(&self) -> usize {
+    fn available(&self) -> usize {
         self.capacity - self.used
-    }
-
-    pub fn add_object(&mut self, object_id: String, size: usize) -> bool {
-        if self.used + size <= self.capacity {
-            self.objects.insert(object_id, size);
-            self.used += size;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn remove_object(&mut self, object_id: &str) -> Option<usize> {
-        if let Some(size) = self.objects.remove(object_id) {
-            self.used -= size;
-            Some(size)
-        } else {
-            None
-        }
     }
 }

@@ -16,9 +16,6 @@ use tokio::{fs::create_dir_all, io::AsyncSeekExt, sync::Mutex as TokioMutex};
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, warn};
 
-/// bytes per second (500 KB/s)
-const RATE_BYTES_PER_SEC: f64 = 500.0 * 1024.0;
-
 #[derive(Serialize, Deserialize)]
 pub(crate) struct UploadResponse {
     pub(crate) job_id: String,
@@ -121,6 +118,7 @@ pub(crate) async fn upload_mp4_raw(
 }
 
 pub(crate) async fn serve_video(
+    Extension(state): Extension<AppState>,
     AxumPath(filename): AxumPath<String>,
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
@@ -166,8 +164,8 @@ pub(crate) async fn serve_video(
     let len = end - start + 1;
 
     let bucket = Arc::new(TokioMutex::new(TokenBucket::new(
-        RATE_BYTES_PER_SEC,
-        RATE_BYTES_PER_SEC,
+        state.token_rate,
+        state.token_rate,
     )));
 
     use tokio::io::AsyncReadExt as _;
@@ -311,6 +309,7 @@ pub(crate) async fn upload_files(
 }
 
 pub(crate) async fn serve_video_object(
+    Extension(state): Extension<AppState>,
     AxumPath((job_id, filename)): AxumPath<(String, String)>,
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
@@ -340,8 +339,8 @@ pub(crate) async fn serve_video_object(
     let len = end - start + 1;
 
     let bucket = Arc::new(TokioMutex::new(TokenBucket::new(
-        RATE_BYTES_PER_SEC,
-        RATE_BYTES_PER_SEC,
+        state.token_rate,
+        state.token_rate,
     )));
 
     use tokio::io::AsyncReadExt as _;

@@ -11,14 +11,16 @@ use tracing::{debug, error, info, warn};
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    pub(crate) token_rate: f64,
     pub(crate) job_set: Arc<TokioMutex<BTreeSet<Job>>>,
     pub(crate) job_tx: UnboundedSender<JobGenerator>,
 }
 
 impl AppState {
-    pub(crate) fn new(permits: usize) -> Self {
+    pub(crate) fn new(token_rate: f64, permits: usize) -> Self {
         let (tx, rx) = unbounded();
         let this = Self {
+            token_rate,
             job_set: Arc::default(),
             job_tx: tx,
         };
