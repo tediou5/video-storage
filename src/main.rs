@@ -1,22 +1,17 @@
 mod app_state;
 mod bucket;
-use app_state::AppState;
-
 mod job;
-use job::{JOB_FILE, Job, JobGenerator};
-
 mod middleware;
-
 mod routes;
-use routes::{serve_video, serve_video_object, upload_files, upload_mp4_raw};
-
 mod stream_map;
-use stream_map::StreamMap;
-
 mod token_bucket;
-use token_bucket::TokenBucket;
-
 mod utils;
+
+use app_state::AppState;
+use job::{JOB_FILE, Job, JobGenerator};
+use routes::{serve_video, serve_video_object, upload_files, upload_mp4_raw};
+use stream_map::StreamMap;
+use token_bucket::TokenBucket;
 use utils::spawn_hls_job;
 
 use std::{collections::BTreeSet, path::PathBuf};
@@ -47,6 +42,8 @@ struct Args {
     listen_on_port: u16,
     #[arg(short, long, default_value_t = 5)]
     permits: usize,
+    #[arg(short, long, default_value_t = 0.0)]
+    token_rate: f64,
 }
 
 #[tokio::main]
@@ -54,11 +51,12 @@ async fn main() {
     let Args {
         listen_on_port,
         permits,
+        token_rate,
     } = Args::parse();
 
     tracing_subscriber::fmt::init();
     ffmpeg::init().unwrap();
-    let state = AppState::new(permits);
+    let state = AppState::new(token_rate, permits);
 
     // load pending jobs from file
     let json = tokio::fs::read_to_string(JOB_FILE)

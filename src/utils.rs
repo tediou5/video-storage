@@ -1192,7 +1192,7 @@ pub(crate) fn create_master_playlist(
             .inspect_err(|error| error!(%error, "Failed to convert to {width}x{height}P HLS"))?;
     }
 
-    let master_playlist_path = out_dir.join(format!("{}.m3u8", job_id));
+    let master_playlist_path = out_dir.join(format!("{job_id}.m3u8"));
     let mut file = std::fs::File::create(&master_playlist_path)?;
 
     let mut content = String::new();
