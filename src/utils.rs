@@ -545,6 +545,7 @@ fn handle_encoded_audio_packet(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn flush_video_path(
     job_id: &str,
     dec_video: &mut codec::decoder::Video,
@@ -650,6 +651,7 @@ fn flush_video_path(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn flush_audio_path(
     job_id: &str,
     dec_audio: &mut codec::decoder::Audio,
@@ -916,6 +918,7 @@ fn flush_audio_path(
 }
 
 /// Convert MP4 to a VP9 variant of a specific height.
+#[allow(dead_code)]
 pub fn convert_to_vp9_variant(
     job: &Job,
     input: &Path,
@@ -1182,16 +1185,477 @@ pub(crate) fn create_master_playlist(
     input: &Path,
     out_dir: &Path,
 ) -> anyhow::Result<()> {
-    let job_id = job.id();
-    let temp_vp9_dir = PathBuf::from(TEMP_DIR).join(format!("tmp-vp9-{job_id}"));
-    std::fs::create_dir_all(&temp_vp9_dir)?;
+    // Use the optimized version
+    create_master_playlist_optimized(job, input, out_dir)
+}
 
-    for (width, height) in RESOLUTIONS {
-        // Convert to target height VP9 variant
-        convert_to_target_hls(job, input, &temp_vp9_dir, width, height, out_dir)
-            .inspect_err(|error| error!(%error, "Failed to convert to {width}x{height}P HLS"))?;
+/// Optimized version that decodes once and encodes to multiple resolutions simultaneously
+pub(crate) fn create_master_playlist_optimized(
+    job: &Job,
+    input: &Path,
+    out_dir: &Path,
+) -> anyhow::Result<()> {
+    let job_id = job.id();
+    info!(%job_id, ?input, ?out_dir, "Starting optimized multi-resolution conversion");
+
+    // Setup input context
+    let mut open_opts = Dictionary::new();
+    open_opts.set("probesize", "5000000"); // Read 5 MB data to probe
+    open_opts.set("analyzeduration", "10000000"); // Read 10 s data to analyze
+
+    let mut ictx = format::input_with_dictionary(input.to_str().unwrap(), open_opts)
+        .map_err(|e| anyhow!("Failed to open input video: {e}"))?;
+
+    let in_video = ictx
+        .streams()
+        .best(media::Type::Video)
+        .ok_or_else(|| anyhow!("Can not find input video stream"))?;
+    let in_audio = ictx
+        .streams()
+        .best(media::Type::Audio)
+        .ok_or_else(|| anyhow!("Can not find input audio stream"))?;
+    let in_video_idx = in_video.index();
+    let in_audio_idx = in_audio.index();
+
+    // Setup video decoder
+    let codec_params = in_video.parameters();
+    let codec = codec::context::Context::from_parameters(codec_params)?;
+    let mut dec_video = codec.decoder().video()?;
+
+    // Setup audio decoder
+    let codec_params = in_audio.parameters();
+    let codec = codec::context::Context::from_parameters(codec_params)?;
+    let mut dec_audio = codec.decoder().audio()?;
+
+    let original_width = dec_video.width();
+    let original_height = dec_video.height();
+
+    // Create temporary directories for each resolution
+    let temp_vp9_dirs: Vec<PathBuf> = RESOLUTIONS
+        .iter()
+        .map(|(width, _)| PathBuf::from(TEMP_DIR).join(format!("tmp-vp9-{job_id}-{width}")))
+        .collect();
+
+    for dir in &temp_vp9_dirs {
+        std::fs::create_dir_all(dir)?;
     }
 
+    // Setup scalers and encoders for each resolution
+    let mut scalers = Vec::new();
+    let mut encoders = Vec::new();
+    let mut output_contexts = Vec::new();
+    let mut vp9_files = Vec::new();
+
+    for (i, &(target_width, target_height)) in RESOLUTIONS.iter().enumerate() {
+        // Create scaler
+        let scaler = Scaler::get(
+            dec_video.format(),
+            original_width,
+            original_height,
+            YUV420P,
+            target_width,
+            target_height,
+            Flags::BILINEAR,
+        )?;
+        scalers.push(scaler);
+
+        // Create VP9 output file
+        let vp9_file = temp_vp9_dirs[i].join(format!("{target_width}P.webm"));
+        vp9_files.push(vp9_file.clone());
+
+        let mut octx = format::output_as(vp9_file.to_str().unwrap(), "webm")
+            .map_err(|e| anyhow!("Failed to create output context for {target_width}P: {e}"))?;
+
+        // Setup video encoder for this resolution
+        let (_, enc_video) = setup_vp9_video_encoder(
+            job,
+            &dec_video,
+            target_width,
+            target_height,
+            &mut octx,
+            &in_video,
+        )?;
+        encoders.push(enc_video);
+        output_contexts.push(octx);
+    }
+
+    // Setup single audio encoder (shared across all resolutions)
+    let (_, mut enc_audio, mut audio_resampler, opus_frame_size, opus_num_channels) =
+        setup_opus_audio_encoder_and_resampler(job_id, &dec_audio, &mut output_contexts[0])?;
+
+    // Write headers for all output contexts
+    for octx in &mut output_contexts {
+        octx.write_header()
+            .map_err(|e| anyhow!("Failed to write header: {e}"))?;
+    }
+
+    info!(%job_id, "Setup complete. Starting multi-resolution encoding...");
+
+    // Processing variables
+    let in_video_time_base = in_video.time_base();
+    let mut decoded_video_frame = frame::Video::empty();
+    let mut scaled_video_frames: Vec<frame::Video> = (0..RESOLUTIONS.len())
+        .map(|_| frame::Video::empty())
+        .collect();
+    let mut decoded_audio_frame = frame::Audio::empty();
+    let mut audio_sample_buffer: Vec<f32> = Vec::new();
+    let mut opus_input_frame =
+        frame::Audio::new(OPUS_TARGET_FORMAT, opus_frame_size, OPUS_TARGET_LAYOUT);
+    let mut audio_next_pts: i64 = 0;
+
+    let total_duration_us = ictx.duration();
+    let mut last_reported_progress_video_ts_us: i64 = 0;
+    const PROGRESS_INTERVAL_US: i64 = 10_000_000; // 10 seconds in microseconds
+
+    'main_loop: for (stream, packet) in ictx.packets() {
+        if stream.index() == in_video_idx {
+            // Decode video frame once
+            if dec_video.send_packet(&packet).is_err() {
+                warn!(%job_id, "Video Decoder: Error sending packet, skipping.");
+                continue;
+            }
+
+            while dec_video.receive_frame(&mut decoded_video_frame).is_ok() {
+                // Progress reporting
+                if let Some(pts) = decoded_video_frame.pts() {
+                    let current_video_ts_us =
+                        (pts * in_video_time_base.numerator() as i64 * 1_000_000)
+                            / in_video_time_base.denominator() as i64;
+
+                    if current_video_ts_us
+                        >= last_reported_progress_video_ts_us + PROGRESS_INTERVAL_US
+                    {
+                        if total_duration_us > 0 {
+                            let percent = (current_video_ts_us as f64 / total_duration_us as f64
+                                * 100.0)
+                                .min(100.0);
+                            let current_s = current_video_ts_us as f64 / 1_000_000.0;
+                            let total_s = total_duration_us as f64 / 1_000_000.0;
+                            info!(%job_id, "Multi-resolution Progress: {:.1}% ({:.1}s / {:.1}s processed)", percent, current_s, total_s);
+                        }
+                        last_reported_progress_video_ts_us =
+                            (current_video_ts_us / PROGRESS_INTERVAL_US) * PROGRESS_INTERVAL_US;
+                    }
+                }
+
+                // Scale and encode for each resolution
+                for (i, (scaler, encoder)) in
+                    scalers.iter_mut().zip(encoders.iter_mut()).enumerate()
+                {
+                    let scaled_frame = &mut scaled_video_frames[i];
+
+                    if scaler.run(&decoded_video_frame, scaled_frame).is_err() {
+                        warn!(%job_id, "Video Scaler: Error for resolution {}, skipping frame.", RESOLUTIONS[i].0);
+                        continue;
+                    }
+
+                    scaled_frame.set_pts(decoded_video_frame.pts());
+
+                    if encoder.send_frame(scaled_frame).is_err() {
+                        warn!(%job_id, "VP9 Encoder: Error sending frame for resolution {}, skipping.", RESOLUTIONS[i].0);
+                        continue;
+                    }
+
+                    let mut encoded_video_packet = Packet::empty();
+                    while encoder.receive_packet(&mut encoded_video_packet).is_ok() {
+                        if let Err(error) = handle_encoded_video_packet(
+                            job_id,
+                            &mut encoded_video_packet,
+                            0, // Video stream index is always 0 in our VP9 files
+                            in_video_time_base,
+                            &mut output_contexts[i],
+                        ) {
+                            error!(%job_id, ?error, "Failed to handle encoded video packet for resolution {}, stopping.", RESOLUTIONS[i].0);
+                            break 'main_loop;
+                        }
+                    }
+                }
+            }
+        } else if stream.index() == in_audio_idx {
+            // Process audio once (will be used for all resolutions)
+            if dec_audio.send_packet(&packet).is_err() {
+                warn!(%job_id, "Audio Decoder: Error sending packet, skipping.");
+                continue;
+            }
+
+            while dec_audio.receive_frame(&mut decoded_audio_frame).is_ok() {
+                let mut temp_resampled_frame = frame::Audio::empty();
+                match audio_resampler.run(&decoded_audio_frame, &mut temp_resampled_frame) {
+                    Ok(_) => {
+                        if temp_resampled_frame.samples() > 0 {
+                            let num_new_samples = temp_resampled_frame.samples();
+                            let samples_ptr = temp_resampled_frame.data(0).as_ptr() as *const f32;
+                            let new_data_slice = unsafe {
+                                std::slice::from_raw_parts(
+                                    samples_ptr,
+                                    num_new_samples * opus_num_channels,
+                                )
+                            };
+                            audio_sample_buffer.extend_from_slice(new_data_slice);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(%job_id, "Audio Resampler: Error during run: {e}, skipping this audio data.");
+                        continue;
+                    }
+                }
+
+                // Process audio for all resolutions
+                while audio_sample_buffer.len() >= opus_frame_size * opus_num_channels {
+                    let samples_for_opus_frame_len = opus_frame_size * opus_num_channels;
+                    let plane_data_mut = opus_input_frame.data_mut(0);
+                    unsafe {
+                        let dest_ptr = plane_data_mut.as_mut_ptr() as *mut f32;
+                        let src_ptr = audio_sample_buffer.as_ptr();
+                        std::ptr::copy_nonoverlapping(
+                            src_ptr,
+                            dest_ptr,
+                            samples_for_opus_frame_len,
+                        );
+                    }
+                    audio_sample_buffer.drain(0..samples_for_opus_frame_len);
+                    opus_input_frame.set_pts(None);
+
+                    if enc_audio.send_frame(&opus_input_frame).is_err() {
+                        warn!(%job_id, "Opus Encoder: Error sending frame, data might be lost.");
+                        break;
+                    }
+
+                    let mut encoded_audio_packet = Packet::empty();
+                    while enc_audio.receive_packet(&mut encoded_audio_packet).is_ok() {
+                        // Write audio packet to all output contexts
+                        for octx in &mut output_contexts {
+                            let mut audio_packet_copy = encoded_audio_packet.clone();
+                            if let Err(error) = handle_encoded_audio_packet(
+                                job_id,
+                                &mut audio_packet_copy,
+                                1, // Audio stream index is always 1 in our VP9 files
+                                audio_next_pts,
+                                opus_frame_size as i64,
+                                octx,
+                            ) {
+                                error!(%job_id, ?error, "Output: Error writing interleaved audio packet, stopping.");
+                                break 'main_loop;
+                            }
+                        }
+                        audio_next_pts += opus_frame_size as i64;
+                    }
+                }
+            }
+        }
+    }
+
+    // Final progress log
+    if total_duration_us > 0 {
+        let total_s_final = total_duration_us as f64 / 1_000_000.0;
+        info!(%job_id, "Multi-resolution Progress: 100.0% ({:.1}s processed) (finalizing)", total_s_final);
+    }
+
+    debug!(%job_id, "Flushing remaining frames for all resolutions...");
+
+    // Flush video encoders
+    for (i, encoder) in encoders.iter_mut().enumerate() {
+        flush_video_encoder(job_id, encoder, &mut output_contexts[i], in_video_time_base)?;
+    }
+
+    // Flush audio encoder for all contexts
+    flush_audio_encoder(
+        job_id,
+        &mut enc_audio,
+        &mut output_contexts,
+        &mut audio_sample_buffer,
+        &mut opus_input_frame,
+        opus_frame_size,
+        opus_num_channels,
+        &mut audio_next_pts,
+    )?;
+
+    // Write trailers
+    for octx in &mut output_contexts {
+        octx.write_trailer()
+            .map_err(|e| anyhow!("Failed to write trailer: {e}"))?;
+    }
+
+    info!(%job_id, "VP9 encoding completed for all resolutions. Converting to HLS...");
+
+    // Convert each VP9 file to HLS
+    for (i, &(width, height)) in RESOLUTIONS.iter().enumerate() {
+        let vp9_file = &vp9_files[i];
+        convert_vp9_to_hls(job, vp9_file, width, height, out_dir).inspect_err(
+            |error| error!(%error, "Failed to convert {width}x{height}P VP9 to HLS"),
+        )?;
+    }
+
+    // Create master playlist
+    create_master_playlist_file(job, out_dir)?;
+
+    info!(%job_id, "Optimized multi-resolution conversion completed successfully!");
+    Ok(())
+}
+
+/// Helper function to flush a single video encoder
+fn flush_video_encoder(
+    job_id: &str,
+    encoder: &mut codec::encoder::video::Encoder,
+    octx: &mut OutputContext,
+    in_video_time_base: Rational,
+) -> anyhow::Result<()> {
+    if encoder.send_eof().is_err() {
+        warn!(%job_id, "Video Encoder: Error sending EOF during flush.");
+        return Ok(());
+    }
+
+    let mut encoded_packet = Packet::empty();
+    while encoder.receive_packet(&mut encoded_packet).is_ok() {
+        handle_encoded_video_packet(job_id, &mut encoded_packet, 0, in_video_time_base, octx)?;
+    }
+    Ok(())
+}
+
+/// Helper function to flush audio encoder for multiple contexts
+fn flush_audio_encoder(
+    job_id: &str,
+    enc_audio: &mut codec::encoder::audio::Encoder,
+    output_contexts: &mut [OutputContext],
+    audio_sample_buffer: &mut Vec<f32>,
+    opus_input_frame: &mut frame::Audio,
+    opus_frame_size: usize,
+    opus_num_channels: usize,
+    audio_next_pts: &mut i64,
+) -> anyhow::Result<()> {
+    // Process remaining samples in buffer
+    while audio_sample_buffer.len() >= opus_frame_size * opus_num_channels {
+        let samples_for_opus_frame_len = opus_frame_size * opus_num_channels;
+        let plane_data_mut = opus_input_frame.data_mut(0);
+        unsafe {
+            let dest_ptr = plane_data_mut.as_mut_ptr() as *mut f32;
+            let src_ptr = audio_sample_buffer.as_ptr();
+            std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, samples_for_opus_frame_len);
+        }
+        audio_sample_buffer.drain(0..samples_for_opus_frame_len);
+        opus_input_frame.set_pts(None);
+
+        if enc_audio.send_frame(opus_input_frame).is_ok() {
+            let mut encoded_packet = Packet::empty();
+            while enc_audio.receive_packet(&mut encoded_packet).is_ok() {
+                for octx in output_contexts.iter_mut() {
+                    let mut audio_packet_copy = encoded_packet.clone();
+                    handle_encoded_audio_packet(
+                        job_id,
+                        &mut audio_packet_copy,
+                        1,
+                        *audio_next_pts,
+                        opus_frame_size as i64,
+                        octx,
+                    )?;
+                }
+                *audio_next_pts += opus_frame_size as i64;
+            }
+        }
+    }
+
+    // Send EOF and flush
+    if enc_audio.send_eof().is_ok() {
+        let mut encoded_packet = Packet::empty();
+        while enc_audio.receive_packet(&mut encoded_packet).is_ok() {
+            for octx in output_contexts.iter_mut() {
+                let mut audio_packet_copy = encoded_packet.clone();
+                handle_encoded_audio_packet(
+                    job_id,
+                    &mut audio_packet_copy,
+                    1,
+                    *audio_next_pts,
+                    opus_frame_size as i64,
+                    octx,
+                )?;
+            }
+            *audio_next_pts += opus_frame_size as i64;
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert VP9 file to HLS format
+fn convert_vp9_to_hls(
+    job: &Job,
+    vp9_file: &Path,
+    target_width: u32,
+    _target_height: u32,
+    out_dir: &Path,
+) -> anyhow::Result<()> {
+    let job_id = job.id();
+    let out_dir = out_dir.join(target_width.to_string());
+    std::fs::create_dir_all(&out_dir)?;
+
+    debug!(%job_id, ?vp9_file, ?out_dir, "Converting {target_width}P VP9 to HLS");
+
+    // Input context
+    let mut open_opts = Dictionary::new();
+    open_opts.set("probesize", "5000000");
+    open_opts.set("analyzeduration", "10000000");
+
+    let mut ictx = format::input_with_dictionary(vp9_file.to_str().unwrap(), open_opts)
+        .inspect_err(|error| error!(?error, %job_id, "Failed to open VP9 file"))?;
+
+    // Output context
+    let playlist_path = out_dir.join(format!("{job_id}.m3u8"));
+    let mut octx = format::output_as(playlist_path.to_str().unwrap(), "hls")?;
+
+    // Set HLS options
+    let mut opts = Dictionary::new();
+    opts.set("hls_time", "4");
+    opts.set("hls_playlist_type", "vod");
+    opts.set(
+        "hls_segment_filename",
+        &format!(
+            "{}/{job_id}-%03d.m4s",
+            out_dir.to_str().ok_or(anyhow!("Empty output path"))?
+        ),
+    );
+    opts.set("hls_fmp4_init_filename", &format!("{job_id}-init.mp4"));
+    opts.set("hls_segment_type", "fmp4");
+
+    // Copy codec parameters
+    for stream in ictx.streams() {
+        let codec_id = stream.parameters().id();
+        let mut ost = octx.add_stream(codec_id)?;
+        ost.set_parameters(stream.parameters());
+    }
+
+    octx.write_header_with(opts).map_err(|error| {
+        anyhow!("Failed to write header with opts when converting VP9 to HLS: {error}")
+    })?;
+
+    // Copy packets
+    for (stream, mut packet) in ictx.packets() {
+        if packet.duration() == 0 && stream.parameters().medium() == media::Type::Video {
+            let fr = stream.avg_frame_rate();
+            if fr.numerator() != 0 {
+                let tb = stream.time_base();
+                let dur = (tb.denominator() as i64 * fr.denominator() as i64)
+                    / (tb.numerator() as i64 * fr.numerator() as i64);
+                packet.set_duration(dur);
+            }
+        }
+
+        packet.set_stream(stream.index());
+        if let Some(octx_stream) = octx.stream(stream.index()) {
+            packet.rescale_ts(stream.time_base(), octx_stream.time_base());
+        }
+        packet.write_interleaved(&mut octx)?;
+    }
+
+    octx.write_trailer()
+        .map_err(|e| anyhow!("Failed to write HLS trailer: {e}"))?;
+
+    info!(%job_id, ?playlist_path, "HLS conversion completed for {target_width}P");
+    Ok(())
+}
+
+/// Create the master playlist file
+fn create_master_playlist_file(job: &Job, out_dir: &Path) -> anyhow::Result<()> {
+    let job_id = job.id();
     let master_playlist_path = out_dir.join(format!("{job_id}.m3u8"));
     let mut file = std::fs::File::create(&master_playlist_path)?;
 
@@ -1200,15 +1664,6 @@ pub(crate) fn create_master_playlist(
     content.push_str("#EXT-X-VERSION:3\n");
     content.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
 
-    // #EXTM3U
-    // #EXT-X-VERSION:3
-    // #EXT-X-INDEPENDENT-SEGMENTS
-    // #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720
-    // 720/{job-id}.m3u8
-    // #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=960x540
-    // 540/{job-id}.m3u8
-    // #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=854x480
-    // 480/{job-id}.m3u8
     for ((width, height), bandwidth) in RESOLUTIONS.iter().zip(BANDWIDTHS.iter()) {
         content.push_str(&format!(
             "#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={width}x{height},CODECS=\"vp09.00.51.08.01.01.01.01.00,opus\"\n"
@@ -1218,9 +1673,11 @@ pub(crate) fn create_master_playlist(
 
     file.write_all(content.as_bytes())?;
     info!(%job_id, "Master playlist created at: {:?}", master_playlist_path);
+
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn convert_to_target_hls(
     job: &Job,
     input: &Path,
