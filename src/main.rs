@@ -32,7 +32,14 @@ const TEMP_DIR: &str = "temp";
 const UPLOADS_DIR: &str = "uploads";
 const VIDEOS_DIR: &str = "videos";
 const VIDEO_OBJECTS_DIR: &str = "video-objects";
+
+#[cfg(feature = "debug")]
+const RESOLUTIONS: [(u32, u32); 1] = [(480, 854)];
+#[cfg(feature = "debug")]
+const BANDWIDTHS: [u32; 1] = [1000000];
+#[cfg(not(feature = "debug"))]
 const RESOLUTIONS: [(u32, u32); 3] = [(720, 1280), (540, 960), (480, 854)];
+#[cfg(not(feature = "debug"))]
 const BANDWIDTHS: [u32; 3] = [2500000, 1500000, 1000000];
 
 #[derive(Parser, Debug)]

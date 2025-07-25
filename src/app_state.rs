@@ -99,8 +99,10 @@ impl AppState {
                             } else {
                                 info!(%id, ?upload_path, "Upload file removed");
                             };
+
+                            #[cfg(not(feature = "debug"))]
                             let temp_vp9_dir = PathBuf::from(crate::TEMP_DIR).join(format!("tmp-vp9-{id}"));
-                            // let vp9_file = temp_vp9_dir.join("vp9.webm");
+                            #[cfg(not(feature = "debug"))]
                             if let Err(error) = tokio::fs::remove_dir_all(&temp_vp9_dir).await {
                                 error!(%error, %id, ?temp_vp9_dir, "Failed to remove tmp vp9 dir");
                             } else {

@@ -3,12 +3,13 @@ name = "video-storage"
 version = "0.3.0"
 edition = "2024"
 
+[features]
+debug = []
+
 [dependencies]
 bytes = "1"
-ffmpeg-next = { version = "7.1", features = [
-    "software-resampling",
-    "software-scaling",
-] }
+ffmpeg-next = { version = "7.1.0" }
+ez-ffmpeg = { version = "0.5.3" }
 futures = "0.3"
 mime_guess = "2"
 
