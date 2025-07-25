@@ -51,6 +51,7 @@ impl AppState {
                             break;
                         };
 
+                        let job = generator.job.clone();
                         let id = generator.id().to_string();
                         let semaphore_c = semaphore.clone();
                         let task = async move {
@@ -75,6 +76,11 @@ impl AppState {
                             warn!("Job {id} already in-progress, skipping");
                             continue;
                         }
+                        info!(id, "Job added to job set");
+                        job_set.lock().await.insert(job);
+                        let dump = serde_json::to_string(&*job_set.lock().await).unwrap();
+                        // update jobs file
+                        _ = tokio::fs::write(crate::JOB_FILE, dump).await;
                     }
                     (id, result) = jobs.select_next_some() => {
                         let Err(job) = result else {

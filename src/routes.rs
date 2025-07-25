@@ -98,12 +98,6 @@ pub(crate) async fn upload_mp4_raw(
         }
     }
 
-    let mut jobs = state.job_set.lock().await;
-    jobs.insert(job.clone());
-    let dump = serde_json::to_string(&*jobs).unwrap();
-    tokio::fs::write(crate::JOB_FILE, dump).await.unwrap();
-    info!(%job_id, "File uploaded successfully, jobs set updated");
-
     let generator = crate::JobGenerator::new(job, upload_path);
 
     _ = state.job_tx.unbounded_send(generator);
