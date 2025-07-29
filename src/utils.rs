@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use ez_ffmpeg::AVMediaType;
 use ez_ffmpeg::Frame;
 use ez_ffmpeg::container_info::get_duration_us;
 use ez_ffmpeg::filter::frame_filter::FrameFilter;
 use ez_ffmpeg::filter::frame_filter_context::FrameFilterContext;
 use ez_ffmpeg::filter::frame_pipeline_builder::FramePipelineBuilder;
+use ez_ffmpeg::{AVMediaType, Input};
 use ez_ffmpeg::{FfmpegContext, Output};
 use ffmpeg_next::{Dictionary, format, media};
 use tracing::{debug, error, info, warn};
@@ -39,28 +39,53 @@ pub(crate) async fn spawn_hls_job(job: Job, upload_path: PathBuf) -> anyhow::Res
     Ok(())
 }
 
-/// Convert MP4 to a VP9 variant of a specific height.
-pub fn convert_to_vp9_variant(
+/// Convert MP4 to a VP9 variant with specified scales.
+pub fn convert_to_vp9_with_scales(
     job: &Job,
     input: &Path,
-    output: &Path,
-    target_width: u32,
-    target_height: u32,
-    frame_pipeline: FramePipelineBuilder,
-) -> anyhow::Result<()> {
+    vp9_dir: &Path,
+    scales: &[(u32, u32)],
+    progress_callbacker: Arc<ProgressCallBacker>,
+) -> anyhow::Result<Vec<(PathBuf, u32)>> {
     let Job { id: job_id, crf } = job;
-    debug!(%job_id, %crf, ?input, ?output, "Converting to {target_width}P VP9 variant");
 
-    let output = Output::from(output.to_str().unwrap())
-        .set_video_codec_opt("crf", crf.to_string())
-        .add_frame_pipeline(frame_pipeline);
-    Ok(FfmpegContext::builder()
-        .input(input.to_str().unwrap())
-        .filter_desc(format!("scale={target_width}:{target_height}"))
-        .output(output)
-        .build()?
-        .start()?
-        .wait()?)
+    let (outputs, vp9s): (Vec<_>, Vec<_>) = scales
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, (w, _))| {
+            let frame_pipeline: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_AUDIO.into();
+            let progress_filter = ProgressCallBackFilter::new(progress_callbacker.clone());
+            let pipe = frame_pipeline.filter("progress", Box::new(progress_filter));
+            let vp9 = vp9_dir.join(format!("{w}P.webm"));
+
+            (
+                Output::from(vp9.to_str().unwrap())
+                    .set_video_codec_opt("crf", crf.to_string())
+                    .add_stream_map(format!("v{i}"))
+                    .add_stream_map("0:a?")
+                    .set_video_codec("libvpx-vp9")
+                    .set_audio_codec("libopus")
+                    .add_frame_pipeline(pipe),
+                (vp9, w),
+            )
+        })
+        .unzip();
+
+    let target_scales = scales.len();
+    let (outs, scales): (String, String) = scales
+        .iter()
+        .enumerate()
+        .map(|(i, (w, h))| (format!("[out{i}]"), format!(";[out{i}]scale={w}:{h}[v{i}]")))
+        .unzip();
+    let graphs = format!("[0:v]split={target_scales}{outs}{scales}");
+    debug!(%job_id, %crf, ?input, ?vp9_dir, ?graphs, "Converting to VP9");
+
+    let input = Input::from(input.to_str().unwrap());
+    let builder = FfmpegContext::builder().input(input).filter_desc(graphs);
+    builder.outputs(outputs).build()?.start()?.wait()?;
+
+    Ok(vp9s)
 }
 
 pub(crate) fn create_master_playlist(job: &Job, input: &Path, output: &Path) -> anyhow::Result<()> {
@@ -70,7 +95,7 @@ pub(crate) fn create_master_playlist(job: &Job, input: &Path, output: &Path) -> 
 
     let input_str = input.to_str().unwrap();
     let total = get_duration_us(input_str).unwrap();
-    info!(%job_id, "Duration: {} us", total);
+    info!(%job_id, "Duration: {total} us");
 
     let mut progress_callbacker = ProgressCallBacker::new(job_id.to_string());
     progress_callbacker.total_duration = total;
@@ -86,26 +111,11 @@ pub(crate) fn create_master_playlist(job: &Job, input: &Path, output: &Path) -> 
         warn!("Audio stream information not found");
     }
 
-    let with_filters = RESOLUTIONS
-        .iter()
-        .map(|&(w, h)| {
-            let frame_pipeline: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_AUDIO.into();
-            let progress_filter = ProgressCallBackFilter::new(w, progress_callbacker.dup());
-            let pipe = frame_pipeline.filter("progress", Box::new(progress_filter));
-            (w, h, pipe)
-        })
-        .collect::<Vec<_>>();
-
     use rayon::prelude::*;
-    // use rayon::iter::ParallelIterator as _;
-    with_filters
+    convert_to_vp9_with_scales(job, input, &vp9, &RESOLUTIONS, progress_callbacker.into())
+        .inspect_err(|error| error!(?error, "Failed to convert to vp9 with scales"))?
         .into_par_iter()
-        .map(|(width, height, pipe)| {
-            let job_c = job.clone();
-            convert_to_target_hls(&job_c, input, &vp9, width, height, output, pipe).inspect_err(
-                |error| error!(%error, "Failed to convert to {}x{}P HLS", width, height),
-            )
-        })
+        .map(|(vp9, w)| convert_to_target_hls(job_id, &vp9, w, output))
         .collect::<Result<Vec<_>, _>>()?;
 
     let master_playlist_path = output.join(format!("{job_id}.m3u8"));
@@ -138,31 +148,14 @@ pub(crate) fn create_master_playlist(job: &Job, input: &Path, output: &Path) -> 
 }
 
 pub(crate) fn convert_to_target_hls(
-    job: &Job,
+    job_id: &str,
     input: &Path,
-    temp_dir: &Path,
     target_width: u32,
-    target_height: u32,
     out_dir: &Path,
-    frame_pipeline: FramePipelineBuilder,
 ) -> anyhow::Result<()> {
-    let job_id = job.id();
-    let vp9_file = temp_dir.join(format!("{target_width}P.webm"));
+    let input_path = input.to_str().ok_or(anyhow!("Empty input path"))?;
     let out_dir = out_dir.join(target_width.to_string());
     std::fs::create_dir_all(&out_dir)?;
-
-    // convert to vp9
-    convert_to_vp9_variant(
-        job,
-        input,
-        &vp9_file,
-        target_width,
-        target_height,
-        frame_pipeline,
-    )
-    .inspect_err(|error| error!(%error, "Failed to convert to {target_width}P vp9"))?;
-    let input = vp9_file;
-    let input_path = input.to_str().ok_or(anyhow!("Empty input path"))?;
 
     debug!(%job_id, ?input, ?out_dir, "Converting to {target_width}P HLS");
 
@@ -243,16 +236,7 @@ impl ProgressCallBacker {
         }
     }
 
-    pub fn dup(&self) -> Self {
-        Self {
-            job_id: self.job_id.clone(),
-            total_duration: self.total_duration,
-            time_base: self.time_base,
-            last_report: Arc::new(Mutex::new(0)),
-        }
-    }
-
-    pub fn print_progress(&self, width: u32, frame: &Frame) {
+    pub fn print_progress(&self, frame: &Frame) {
         if let Some(pts) = frame.pts() {
             // Check if the time base is valid.
             if self.time_base.den == 0 {
@@ -273,7 +257,6 @@ impl ProgressCallBacker {
                 let clamped = progress.clamp(0.0, 100.0);
                 info!(
                     job_id = %self.job_id,
-                    width,
                     "Progress: {clamped:.2}% (Current: {time:.3}s / Total: {total:.2}s, PTS: {pts})"
                 );
             }
@@ -282,16 +265,12 @@ impl ProgressCallBacker {
 }
 
 pub struct ProgressCallBackFilter {
-    width: u32,
-    progress_callback: ProgressCallBacker,
+    progress_callback: Arc<ProgressCallBacker>,
 }
 
 impl ProgressCallBackFilter {
-    pub fn new(width: u32, progress_callback: ProgressCallBacker) -> Self {
-        Self {
-            width,
-            progress_callback,
-        }
+    pub fn new(progress_callback: Arc<ProgressCallBacker>) -> Self {
+        Self { progress_callback }
     }
 }
 
@@ -311,7 +290,7 @@ impl FrameFilter for ProgressCallBackFilter {
                 return Ok(Some(frame)); // If invalid, simply return the frame as-is
             }
         }
-        self.progress_callback.print_progress(self.width, &frame);
+        self.progress_callback.print_progress(&frame);
         Ok(Some(frame))
     }
 }
