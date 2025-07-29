@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Detailed Audio Analysis Script for Video Storage Project
+# Detailed Analysis Script for Video Storage Project
 # This script performs segment-by-segment audio analysis to identify missing audio sections
 
 set -e
@@ -12,8 +12,16 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+if [ ! -t 1 ]; then
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    CYAN=''
+    NC=''
+fi
 
-echo -e "${BLUE}=== Detailed Audio Analysis Tool ===${NC}"
+echo -e "${BLUE}=== Detailed Analysis Tool ===${NC}"
 
 # Check dependencies
 for cmd in ffmpeg ffprobe bc; do
@@ -22,6 +30,27 @@ for cmd in ffmpeg ffprobe bc; do
         exit 1
     fi
 done
+
+# Function to show media metadata (video codec, resolution, audio codec, CRF if available)
+show_metadata() {
+    local file="$1"
+    echo -e "${CYAN}=== Media Metadata ===${NC}"
+    if [ ! -f "$file" ]; then
+        echo -e "${RED}File not found: $file${NC}"
+        return 1
+    fi
+    local video_codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1 "$file")
+    local resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$file")
+    local audio_codec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1 "$file")
+    local crf=$(ffprobe -v error -show_entries format_tags=encoder -of default=noprint_wrappers=1 "$file" | grep -oE 'crf[= ]?[0-9]+' | head -n1)
+    if [ -z "$crf" ]; then
+        crf="N/A"
+    fi
+    echo -e "Video Codec: ${GREEN}$video_codec${NC}"
+    echo -e "Resolution: ${GREEN}$resolution${NC}"
+    echo -e "Audio Codec: ${GREEN}$audio_codec${NC}"
+    echo -e "CRF: ${GREEN}$crf${NC}\\n"
+}
 
 # Function to analyze audio in segments
 analyze_audio_segments() {
@@ -59,7 +88,7 @@ analyze_audio_segments() {
     local num_segments=$(echo "($total_duration + $segment_duration - 0.01) / $segment_duration" | bc -l | cut -d. -f1)
 
     echo -e "${GREEN}Analyzing $num_segments segments...${NC}"
-    echo -e "${BLUE}Segment | Start Time | End Time   | RMS Level | Peak Level | Status${NC}"
+    echo -e "${BLUE}Segment | Start Time|  End Time  | RMS Level | Peak Level | Status${NC}"
     echo -e "${BLUE}--------|-----------|------------|-----------|------------|-------${NC}"
 
     local silent_segments=0
@@ -100,7 +129,7 @@ analyze_audio_segments() {
             status="${YELLOW}QUIET${NC}"
         fi
 
-        printf "%-7s | %-9.2f | %-10.2f | %-9s | %-10s | %s\n" \
+        printf "%-7s | %-9.2f | %-10.2f | %-9s | %-10s | %b\n" \
                "$((i+1))" "$start_time" "$end_time" "$rms_level" "$peak_level" "$status"
     done
 
@@ -133,33 +162,6 @@ analyze_audio_segments() {
             fi
         done
     fi
-
-    # Additional detailed analysis for last 30 seconds
-    echo -e "\n${CYAN}=== Detailed End-of-File Analysis ===${NC}"
-    local eof_start=$(echo "$total_duration - 30" | bc -l)
-    if (( $(echo "$eof_start < 0" | bc -l) )); then
-        eof_start=0
-    fi
-
-    echo -e "${CYAN}Analyzing last 30 seconds (${eof_start}s - ${total_duration}s) in 1-second intervals:${NC}"
-
-    local end_analysis_segments=$(echo "$total_duration - $eof_start" | bc -l | cut -d. -f1)
-    for ((i=0; i<end_analysis_segments; i++)); do
-        local seg_start=$(echo "$eof_start + $i" | bc -l)
-        local seg_end=$(echo "$eof_start + $i + 1" | bc -l)
-
-        if (( $(echo "$seg_end > $total_duration" | bc -l) )); then
-            seg_end=$total_duration
-        fi
-
-        local seg_analysis=$(ffmpeg -ss "$seg_start" -i "$temp_audio" -t 1 -af "volumedetect" -f null - 2>&1 | grep "mean_volume" | awk '{print $5}' || echo "-inf")
-
-        if [[ "$seg_analysis" == "-inf" ]] || [[ "$seg_analysis" == "N/A" ]]; then
-            printf "  ${RED}%.0f-%.0fs: SILENT${NC}\n" "$seg_start" "$seg_end"
-        else
-            printf "  ${GREEN}%.0f-%.0fs: %s dB${NC}\n" "$seg_start" "$seg_end" "$seg_analysis"
-        fi
-    done
 
     # Cleanup
     rm -f "$temp_audio"
@@ -249,19 +251,15 @@ main() {
         exit 1
     fi
 
+    # Display media metadata before starting analysis
+    show_metadata "$input_file"
+
     # Perform analysis
     analyze_audio_segments "$input_file" "$segment_duration"
 
     if [ "$generate_waveform" = true ]; then
         generate_waveform_comparison "$input_file" "$output_dir"
     fi
-
-    echo -e "\n${YELLOW}=== Recommendations ===${NC}"
-    echo "1. If silent segments are detected at the end, check the audio flush logic"
-    echo "2. Look for PTS discontinuities in the conversion logs"
-    echo "3. Verify that audio encoder properly handles the last audio frames"
-    echo "4. Check if the audio resampler is dropping samples during flush"
-    echo "5. Consider adding padding to ensure complete audio processing"
 }
 
 main "$@"
