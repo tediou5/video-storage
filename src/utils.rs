@@ -4,7 +4,6 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use anyhow::anyhow;
 use ez_ffmpeg::Frame;
 use ez_ffmpeg::container_info::get_duration_us;
 use ez_ffmpeg::filter::frame_filter::FrameFilter;
@@ -12,7 +11,6 @@ use ez_ffmpeg::filter::frame_filter_context::FrameFilterContext;
 use ez_ffmpeg::filter::frame_pipeline_builder::FramePipelineBuilder;
 use ez_ffmpeg::{AVMediaType, Input};
 use ez_ffmpeg::{FfmpegContext, Output};
-use ffmpeg_next::{Dictionary, format, media};
 use tracing::{debug, error, info, warn};
 
 pub(crate) async fn spawn_hls_job(job: Job, upload_path: PathBuf) -> anyhow::Result<()> {
@@ -40,16 +38,16 @@ pub(crate) async fn spawn_hls_job(job: Job, upload_path: PathBuf) -> anyhow::Res
 }
 
 /// Convert MP4 to a VP9 variant with specified scales.
-pub fn convert_to_vp9_with_scales(
+pub fn convert_with_scales(
     job: &Job,
     input: &Path,
-    vp9_dir: &Path,
+    output: &Path,
     scales: &[(u32, u32)],
     progress_callbacker: Arc<ProgressCallBacker>,
-) -> anyhow::Result<Vec<(PathBuf, u32)>> {
+) -> anyhow::Result<()> {
     let Job { id: job_id, crf } = job;
 
-    let (outputs, vp9s): (Vec<_>, Vec<_>) = scales
+    let outputs = scales
         .iter()
         .copied()
         .enumerate()
@@ -57,20 +55,30 @@ pub fn convert_to_vp9_with_scales(
             let frame_pipeline: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_AUDIO.into();
             let progress_filter = ProgressCallBackFilter::new(progress_callbacker.clone());
             let pipe = frame_pipeline.filter("progress", Box::new(progress_filter));
-            let vp9 = vp9_dir.join(format!("{w}P.webm"));
 
-            (
-                Output::from(vp9.to_str().unwrap())
-                    .set_video_codec_opt("crf", crf.to_string())
-                    .add_stream_map(format!("v{i}"))
-                    .add_stream_map("0:a?")
-                    .set_video_codec("libvpx-vp9")
-                    .set_audio_codec("libopus")
-                    .add_frame_pipeline(pipe),
-                (vp9, w),
-            )
+            let out_dir = output.join(w.to_string());
+            std::fs::create_dir_all(&out_dir)?;
+
+            let playlist_path = out_dir.join(format!("{job_id}.m3u8"));
+            let output_str = out_dir.to_str().unwrap();
+            let hls_segment_filename = format!("{output_str}/{job_id}-%03d.m4s");
+
+            Ok(Output::from(playlist_path.to_str().unwrap())
+                .add_frame_pipeline(pipe)
+                .set_video_codec_opt("crf", crf.to_string())
+                .add_stream_map("0:a?")
+                .add_stream_map(format!("v{i}"))
+                .set_audio_codec("libopus")
+                .set_video_codec("libvpx-vp9")
+                // hls settings
+                .set_format("hls")
+                .set_format_opt("hls_time", "4")
+                .set_format_opt("hls_segment_type", "fmp4")
+                .set_format_opt("hls_playlist_type", "vod")
+                .set_format_opt("hls_fmp4_init_filename", format!("{job_id}-init.mp4"))
+                .set_format_opt("hls_segment_filename", hls_segment_filename))
         })
-        .unzip();
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     let target_scales = scales.len();
     let (outs, scales): (String, String) = scales
@@ -79,19 +87,15 @@ pub fn convert_to_vp9_with_scales(
         .map(|(i, (w, h))| (format!("[out{i}]"), format!(";[out{i}]scale={w}:{h}[v{i}]")))
         .unzip();
     let graphs = format!("[0:v]split={target_scales}{outs}{scales}");
-    debug!(%job_id, %crf, ?input, ?vp9_dir, ?graphs, "Converting to VP9");
+    debug!(%job_id, %crf, ?input, ?graphs, "Converting to HLS");
 
     let input = Input::from(input.to_str().unwrap());
     let builder = FfmpegContext::builder().input(input).filter_desc(graphs);
-    builder.outputs(outputs).build()?.start()?.wait()?;
-
-    Ok(vp9s)
+    Ok(builder.outputs(outputs).build()?.start()?.wait()?)
 }
 
 pub(crate) fn create_master_playlist(job: &Job, input: &Path, output: &Path) -> anyhow::Result<()> {
     let job_id = job.id();
-    let vp9 = PathBuf::from(TEMP_DIR).join(format!("tmp-vp9-{job_id}"));
-    std::fs::create_dir_all(&vp9)?;
 
     let input_str = input.to_str().unwrap();
     let total = get_duration_us(input_str).unwrap();
@@ -111,12 +115,8 @@ pub(crate) fn create_master_playlist(job: &Job, input: &Path, output: &Path) -> 
         warn!("Audio stream information not found");
     }
 
-    use rayon::prelude::*;
-    convert_to_vp9_with_scales(job, input, &vp9, &RESOLUTIONS, progress_callbacker.into())
-        .inspect_err(|error| error!(?error, "Failed to convert to vp9 with scales"))?
-        .into_par_iter()
-        .map(|(vp9, w)| convert_to_target_hls(job_id, &vp9, w, output))
-        .collect::<Result<Vec<_>, _>>()?;
+    convert_with_scales(job, input, output, &RESOLUTIONS, progress_callbacker.into())
+        .inspect_err(|error| error!(?error, "Failed to convert to HLS with scales"))?;
 
     let master_playlist_path = output.join(format!("{job_id}.m3u8"));
     let mut file = std::fs::File::create(&master_playlist_path)?;
@@ -144,78 +144,6 @@ pub(crate) fn create_master_playlist(job: &Job, input: &Path, output: &Path) -> 
 
     file.write_all(content.as_bytes())?;
     info!(%job_id, "Master playlist created at: {:?}", master_playlist_path);
-    Ok(())
-}
-
-pub(crate) fn convert_to_target_hls(
-    job_id: &str,
-    input: &Path,
-    target_width: u32,
-    out_dir: &Path,
-) -> anyhow::Result<()> {
-    let input_path = input.to_str().ok_or(anyhow!("Empty input path"))?;
-    let out_dir = out_dir.join(target_width.to_string());
-    std::fs::create_dir_all(&out_dir)?;
-
-    debug!(%job_id, ?input, ?out_dir, "Converting to {target_width}P HLS");
-
-    // input context
-    let mut open_opts = Dictionary::new();
-    open_opts.set("probesize", "5000000"); // Read 5 MB data to probe
-    open_opts.set("analyzeduration", "10000000"); // Read 10 s data to analyze
-
-    let mut ictx = format::input_with_dictionary(input_path, open_opts)
-        .inspect_err(|error| error!(?error, %job_id, "Failed to open input vp9 video"))?;
-
-    // output context
-    let playlist_path = out_dir.join(format!("{job_id}.m3u8"));
-    let mut octx = format::output_as(playlist_path.to_str().unwrap(), "hls")?;
-
-    // set HLS options
-    let mut opts = Dictionary::new();
-    opts.set("hls_time", "4");
-    opts.set("hls_playlist_type", "vod");
-    opts.set(
-        "hls_segment_filename",
-        &format!(
-            "{}/{job_id}-%03d.m4s",
-            out_dir.to_str().ok_or(anyhow!("Empty output path"))?
-        ),
-    );
-    opts.set("hls_fmp4_init_filename", &format!("{job_id}-init.mp4"));
-    opts.set("hls_segment_type", "fmp4");
-
-    // codec copy
-    for stream in ictx.streams() {
-        let codec_id = stream.parameters().id();
-        let mut ost = octx.add_stream(codec_id)?;
-        ost.set_parameters(stream.parameters());
-    }
-
-    octx.write_header_with(opts).map_err(|error| {
-        anyhow!("Failed to write header with opts when convert to hls: {error}")
-    })?;
-
-    for (stream, mut packet) in ictx.packets() {
-        if packet.duration() == 0 && stream.parameters().medium() == media::Type::Video {
-            let fr = stream.avg_frame_rate();
-            if fr.numerator() != 0 {
-                let tb = stream.time_base();
-                // duration = time_base_den/frame_rate_num ÷ (time_base_num/frame_rate_den)
-                let dur = (tb.denominator() as i64 * fr.denominator() as i64)
-                    / (tb.numerator() as i64 * fr.numerator() as i64);
-                packet.set_duration(dur);
-            }
-        }
-
-        packet.set_stream(stream.index());
-        if let Some(octx_stream) = octx.stream(stream.index()) {
-            // rescale timestamp
-            packet.rescale_ts(stream.time_base(), octx_stream.time_base());
-        }
-        packet.write_interleaved(&mut octx)?;
-    }
-    octx.write_trailer()?;
     Ok(())
 }
 
