@@ -8,7 +8,11 @@ debug = []
 
 [dependencies]
 bytes = "1"
-ffmpeg-next = { version = "7.1.0", features = ["build", "build-lib-opus", "build-lib-vpx"] }
+ffmpeg-next = { version = "7.1.0", features = [
+    "build",
+    "build-lib-opus",
+    "build-lib-vpx",
+] }
 ez-ffmpeg = { version = "0.5.3" }
 futures = "0.3"
 mime_guess = "2"
@@ -26,7 +30,5 @@ tokio-util = { version = "0.7", features = ["io"] }
 tokio-stream = "0.1.17"
 tower-http = { version = "0.6.4", features = ["cors", "trace"] }
 hyper = "1.6.0"
-num_cpus = "1.16.0"
 clap = { version = "4.5.38", features = ["derive"] }
-rayon = "1.10.0"
 walkdir = "2.5.0"
