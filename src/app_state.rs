@@ -1,7 +1,7 @@
 use crate::{Job, JobGenerator, StreamMap};
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -9,30 +9,73 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use tokio::sync::{Mutex as TokioMutex, Semaphore};
 use tracing::{debug, error, info, warn};
 
+const TEMP_DIR: &str = "temp";
+const UPLOADS_DIR: &str = "uploads";
+const VIDEOS_DIR: &str = "videos";
+const JOB_FILE: &str = "pending-jobs.json";
+pub(crate) const VIDEO_OBJECTS_DIR: &str = "video-objects";
+
+async fn init_workspace(workspace: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(workspace.join(TEMP_DIR)).await?;
+    tokio::fs::create_dir_all(workspace.join(UPLOADS_DIR)).await?;
+    tokio::fs::create_dir_all(workspace.join(VIDEOS_DIR)).await?;
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) token_rate: f64,
     pub(crate) job_set: Arc<TokioMutex<BTreeSet<Job>>>,
     pub(crate) job_tx: UnboundedSender<JobGenerator>,
+
+    temp_dir: PathBuf,
+    videos_dir: PathBuf,
+    uploads_dir: PathBuf,
+    pending_jobs_path: PathBuf,
 }
 
 impl AppState {
-    pub(crate) fn new(token_rate: f64, permits: usize) -> Self {
+    pub(crate) async fn new(
+        token_rate: f64,
+        permits: usize,
+        workspace: &Path,
+    ) -> std::io::Result<Self> {
+        init_workspace(workspace).await?;
         let (tx, rx) = unbounded();
         let this = Self {
             token_rate,
             job_set: Arc::default(),
             job_tx: tx,
+
+            temp_dir: workspace.join(TEMP_DIR),
+            uploads_dir: workspace.join(UPLOADS_DIR),
+            videos_dir: workspace.join(VIDEOS_DIR),
+            pending_jobs_path: workspace.join(JOB_FILE),
         };
 
         this.handle_jobs(rx, permits);
-        this
+        Ok(this)
+    }
+
+    pub(crate) fn temp_dir(&self) -> &Path {
+        self.temp_dir.as_path()
+    }
+
+    pub(crate) fn uploads_dir(&self) -> &Path {
+        self.uploads_dir.as_path()
+    }
+
+    pub(crate) fn videos_dir(&self) -> &Path {
+        self.videos_dir.as_path()
+    }
+
+    pub(crate) fn pending_jobs_path(&self) -> &Path {
+        self.pending_jobs_path.as_path()
     }
 
     fn handle_jobs(&self, rx: UnboundedReceiver<JobGenerator>, permits: usize) {
         info!(permits, "Job handler started");
-        let tx = self.job_tx.clone();
-        let job_set = self.job_set.clone();
+        let this = self.clone();
         let semaphore = Arc::new(Semaphore::new(permits));
 
         tokio::spawn(async move {
@@ -53,6 +96,7 @@ impl AppState {
 
                         let job = generator.job.clone();
                         let id = generator.id().to_string();
+                        let this_c = this.clone();
                         let semaphore_c = semaphore.clone();
                         let task = async move {
                             debug!(id = %generator.id(), "Job wait for permit");
@@ -60,7 +104,7 @@ impl AppState {
                             let _permit = semaphore_c.acquire().await.unwrap();
                             info!(id = %generator.id(), "Job started");
 
-                            let result = generator.gen_task().await;
+                            let result = generator.gen_task(this_c).await;
                             let result = result.expect("Tokio task Join failed").map_err(|error| {
                                 error!(%error, id = %generator.id(), "Job process failed, retry later");
                                 generator
@@ -77,23 +121,22 @@ impl AppState {
                             continue;
                         }
                         info!(id, "Job added to job set");
-                        job_set.lock().await.insert(job);
-                        let dump = serde_json::to_string(&*job_set.lock().await).unwrap();
+                        this.job_set.lock().await.insert(job);
+                        let dump = serde_json::to_string(&*this.job_set.lock().await).unwrap();
                         // update jobs file
-                        _ = tokio::fs::write(crate::JOB_FILE, dump).await;
+                        _ = tokio::fs::write(this.pending_jobs_path(), dump).await;
                     }
                     (id, result) = jobs.select_next_some() => {
                         let Err(job) = result else {
                             info!("Job {id} completed successfully");
                             // clean up upload file & update job status
-                            let mut js = job_set.lock().await;
+                            let mut js = this.job_set.lock().await;
                             js.retain(|job| job.id() != id);
                             let dump = serde_json::to_string(&*js).unwrap();
                             // update jobs file
-                            _ = tokio::fs::write(crate::JOB_FILE, dump).await;
+                            _ = tokio::fs::write(this.pending_jobs_path(), dump).await;
                             // remove upload file
-                            let upload_dir = PathBuf::from(crate::UPLOADS_DIR);
-                            let upload_path = upload_dir.join(&id);
+                            let upload_path = this.uploads_dir().join(&id);
                             if let Err(error) = tokio::fs::remove_file(&upload_path).await {
                                 error!(%error, %id, ?upload_path, "Failed to remove upload file");
                             } else {
@@ -104,7 +147,7 @@ impl AppState {
                         };
 
                         warn!(%id, "Retry job");
-                        _ = tx.unbounded_send(job);
+                        _ = this.job_tx.unbounded_send(job);
                     }
                 }
             }

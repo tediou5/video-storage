@@ -1,6 +1,7 @@
+use crate::app_state::VIDEO_OBJECTS_DIR;
 use crate::{AppState, Job, TokenBucket};
 
-use std::{convert::Infallible, io::Error as IoError, path::PathBuf, sync::Arc};
+use std::{convert::Infallible, io::Error as IoError, sync::Arc};
 
 use axum::{
     body::Body,
@@ -65,10 +66,8 @@ pub(crate) async fn upload_mp4_raw(
     }
 
     info!(%job_id, "Uploading file");
-    let upload_dir = PathBuf::from(crate::UPLOADS_DIR);
-    create_dir_all(&upload_dir).await.unwrap();
 
-    let upload_path = upload_dir.join(&job_id);
+    let upload_path = state.uploads_dir().join(&job_id);
     let Ok(mut file) = tokio::fs::File::create(&upload_path).await else {
         error!(%job_id, "Failed to create upload job file");
         return (
@@ -133,7 +132,7 @@ pub(crate) async fn serve_video(
         job_id = jid;
     };
 
-    let mut path = PathBuf::from(crate::VIDEOS_DIR).join(job_id);
+    let mut path = state.videos_dir().join(job_id);
 
     path = path.join(&filename);
     debug!(%job_id, %filename, ?path, "Request server file");
@@ -229,6 +228,7 @@ pub(crate) struct UploadFilesRequest {
 
 #[axum::debug_handler]
 pub(crate) async fn upload_files(
+    Extension(state): Extension<AppState>,
     Query(UploadFilesRequest { id: job_id, name }): Query<UploadFilesRequest>,
     body: Body,
 ) -> impl IntoResponse {
@@ -258,9 +258,7 @@ pub(crate) async fn upload_files(
     }
 
     info!(%job_id, name, "Uploading video objects file");
-    let upload_dir = PathBuf::from(crate::VIDEOS_DIR)
-        .join(&job_id)
-        .join(crate::VIDEO_OBJECTS_DIR);
+    let upload_dir = state.videos_dir().join(&job_id).join(VIDEO_OBJECTS_DIR);
     create_dir_all(&upload_dir).await.unwrap();
 
     let upload_path = upload_dir.join(&name);
@@ -307,9 +305,10 @@ pub(crate) async fn serve_video_object(
     AxumPath((job_id, filename)): AxumPath<(String, String)>,
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
-    let path = PathBuf::from(crate::VIDEOS_DIR)
+    let path = state
+        .videos_dir()
         .join(&job_id)
-        .join(crate::VIDEO_OBJECTS_DIR)
+        .join(VIDEO_OBJECTS_DIR)
         .join(&filename);
     debug!(%job_id, %filename, ?path, "Request server file");
 

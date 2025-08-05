@@ -1,7 +1,8 @@
-use crate::{BANDWIDTHS, Job, RESOLUTIONS, TEMP_DIR, VIDEOS_DIR};
+use crate::job::JobGenerator;
+use crate::{BANDWIDTHS, Job, RESOLUTIONS};
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use ez_ffmpeg::Frame;
@@ -13,15 +14,18 @@ use ez_ffmpeg::{AVMediaType, Input};
 use ez_ffmpeg::{FfmpegContext, Output};
 use tracing::{debug, error, info, warn};
 
-pub(crate) async fn spawn_hls_job(job: Job, upload_path: PathBuf) -> anyhow::Result<()> {
-    let temp_dir = PathBuf::from(TEMP_DIR).join(format!("tmp-{}", job.id()));
-    let out_dir = PathBuf::from(VIDEOS_DIR).join(job.id());
+pub(crate) async fn spawn_hls_job(
+    JobGenerator { job, upload_path }: JobGenerator,
+    videos_dir: &Path,
+    temp_dir: &Path,
+) -> anyhow::Result<()> {
+    let temp_dir = temp_dir.join(format!("tmp-{}", job.id()));
+    let out_dir = videos_dir.join(job.id());
     tokio::fs::create_dir_all(&temp_dir).await?;
 
     let input_path = upload_path.clone();
     tokio::task::spawn_blocking(move || {
         create_master_playlist(&job, &input_path, &temp_dir)?;
-        std::fs::create_dir_all(VIDEOS_DIR)?;
         // Remove existing directory if it exists
         _ = std::fs::remove_dir_all(&out_dir);
         std::fs::rename(&temp_dir, &out_dir)?;
