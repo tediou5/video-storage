@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-pub(crate) const JOB_FILE: &str = "pending-jobs.json";
+use crate::app_state::AppState;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Job {
@@ -17,9 +17,10 @@ impl Job {
     }
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct JobGenerator {
     pub(crate) job: Job,
-    upload_path: PathBuf,
+    pub(crate) upload_path: PathBuf,
 }
 
 impl JobGenerator {
@@ -31,12 +32,11 @@ impl JobGenerator {
         self.job.id()
     }
 
-    pub(crate) fn gen_task(&self) -> tokio::task::JoinHandle<anyhow::Result<()>> {
-        let upload_path = self.upload_path.clone();
-        let job = self.job.clone();
+    pub(crate) fn gen_task(&self, state: AppState) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+        let this = self.clone();
         tokio::spawn(async move {
-            let job_id = job.id().to_string();
-            crate::spawn_hls_job(job, upload_path)
+            let job_id = this.job.id().to_string();
+            crate::spawn_hls_job(this, state.videos_dir(), state.temp_dir())
                 .await
                 .inspect_err(|error| error!(%job_id, %error, "Failed to process video"))
         })

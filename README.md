@@ -9,6 +9,7 @@ Options:
   -l, --listen-on-port <LISTEN_ON_PORT>  [default: 32145]
   -p, --permits <PERMITS>                [default: 5]
   -t, --token-rate <TOKEN_RATE>          [default: 0]
+  -w, --workspace <WORKSPACE>            [default: .]
   -h, --help                             Print help
   -V, --version                          Print version
 ```
