@@ -23,6 +23,12 @@ pub(crate) struct UploadResponse {
     pub(crate) message: String,
 }
 
+#[axum::debug_handler]
+pub(crate) async fn waitlist(Extension(state): Extension<AppState>) -> impl IntoResponse {
+    let len = state.job_set.lock().await.len().to_string();
+    (StatusCode::OK, len)
+}
+
 pub(crate) async fn upload_mp4_raw(
     Extension(state): Extension<AppState>,
     Query(job): Query<Job>,

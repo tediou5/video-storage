@@ -129,20 +129,12 @@ impl AppState {
                     (id, result) = jobs.select_next_some() => {
                         let Err(job) = result else {
                             info!("Job {id} completed successfully");
-                            // clean up upload file & update job status
+                            // update job status
                             let mut js = this.job_set.lock().await;
                             js.retain(|job| job.id() != id);
                             let dump = serde_json::to_string(&*js).unwrap();
                             // update jobs file
                             _ = tokio::fs::write(this.pending_jobs_path(), dump).await;
-                            // remove upload file
-                            let upload_path = this.uploads_dir().join(&id);
-                            if let Err(error) = tokio::fs::remove_file(&upload_path).await {
-                                error!(%error, %id, ?upload_path, "Failed to remove upload file");
-                            } else {
-                                info!(%id, ?upload_path, "Upload file removed");
-                            };
-
                             continue;
                         };
 

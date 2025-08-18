@@ -8,14 +8,6 @@ mod token_bucket;
 mod utils;
 
 use app_state::AppState;
-use job::{Job, JobGenerator};
-use routes::{serve_video, serve_video_object, upload_files, upload_mp4_raw};
-use stream_map::StreamMap;
-use token_bucket::TokenBucket;
-use utils::spawn_hls_job;
-
-use std::{collections::BTreeSet, path::PathBuf, str::FromStr};
-
 use axum::{
     Router,
     extract::Extension,
@@ -23,10 +15,18 @@ use axum::{
 };
 use clap::Parser;
 use ffmpeg_next::{self as ffmpeg};
+use job::{Job, JobGenerator};
+use routes::{serve_video, serve_video_object, upload_files, upload_mp4_raw, waitlist};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::str::FromStr;
+use stream_map::StreamMap;
+use token_bucket::TokenBucket;
 use tokio::net::TcpListener;
 use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
 use tracing::info;
+use utils::spawn_hls_job;
 
 const RESOLUTIONS: [(u32, u32); 3] = [(720, 1280), (540, 960), (480, 854)];
 const BANDWIDTHS: [u32; 3] = [2500000, 1500000, 1000000];
@@ -88,6 +88,7 @@ async fn main() {
         .allow_headers(Any);
 
     let app = Router::new()
+        .route("/waitlist", get(waitlist))
         .route("/upload", post(upload_mp4_raw))
         .route("/videos/{*filename}", get(serve_video))
         .route("/upload-objects", post(upload_files))

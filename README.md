@@ -14,6 +14,17 @@ Options:
   -V, --version                          Print version
 ```
 
+## Check waitlist len
+
+Return the length of waitlist.
+
+example:
+
+```shell
+curl --fail -X GET http://127.0.0.1:32145/waitlist
+6
+```
+
 ## Upload video
 
 ```shell
