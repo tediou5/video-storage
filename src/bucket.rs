@@ -1,9 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::fs::Metadata;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use walkdir::DirEntry;
 

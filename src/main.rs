@@ -2,6 +2,7 @@ mod app_state;
 mod bucket;
 mod job;
 mod middleware;
+mod opendal;
 mod routes;
 mod stream_map;
 mod token_bucket;
@@ -15,7 +16,8 @@ use axum::{
 };
 use clap::Parser;
 use ffmpeg_next::{self as ffmpeg};
-use job::{Job, JobGenerator};
+use job::{ConvertJob, JobGenerator, UploadJob};
+use opendal::{StorageBackend, StorageConfig, StorageManager};
 use routes::{serve_video, serve_video_object, upload_files, upload_mp4_raw, waitlist};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -42,6 +44,30 @@ struct Args {
     token_rate: f64,
     #[arg(short, long, default_value = ".")]
     workspace: String,
+
+    /// Storage backend: local or s3
+    #[arg(short, long, default_value = "local")]
+    storage_backend: String,
+
+    /// S3 bucket name (required when storage-backend is s3)
+    #[arg(long)]
+    s3_bucket: Option<String>,
+
+    /// S3 endpoint (for MinIO/custom S3)
+    #[arg(long)]
+    s3_endpoint: Option<String>,
+
+    /// S3 region
+    #[arg(long)]
+    s3_region: Option<String>,
+
+    /// S3 access key ID
+    #[arg(long)]
+    s3_access_key_id: Option<String>,
+
+    /// S3 secret access key
+    #[arg(long)]
+    s3_secret_access_key: Option<String>,
 }
 
 #[tokio::main]
@@ -51,17 +77,58 @@ async fn main() {
         permits,
         token_rate,
         workspace,
+        storage_backend,
+        s3_bucket,
+        s3_endpoint,
+        s3_region,
+        s3_access_key_id,
+        s3_secret_access_key,
     } = Args::parse();
 
     tracing_subscriber::fmt::init();
     ffmpeg::init().unwrap();
-    let state = AppState::new(
-        token_rate,
-        permits,
-        &PathBuf::from_str(&workspace).expect("Failed to parse workspace dir"),
-    )
-    .await
-    .expect("Failed to create app state");
+
+    // Parse workspace path
+    let workspace_path = PathBuf::from_str(&workspace).expect("Failed to parse workspace dir");
+
+    // Configure storage backend
+    let storage_backend = match storage_backend.as_str() {
+        "local" => {
+            info!("Using local filesystem storage");
+            StorageBackend::Local
+        }
+        "s3" => {
+            info!("Using S3 storage backend");
+            StorageBackend::S3 {
+                bucket: s3_bucket.expect("S3 bucket is required when using S3 backend"),
+                endpoint: s3_endpoint,
+                region: s3_region,
+                access_key_id: s3_access_key_id
+                    .expect("AWS_ACCESS_KEY_ID is required when using S3 backend"),
+                secret_access_key: s3_secret_access_key
+                    .expect("AWS_SECRET_ACCESS_KEY is required when using S3 backend"),
+            }
+        }
+        backend => {
+            panic!(
+                "Unsupported storage backend: {}. Use 'local' or 's3'",
+                backend
+            );
+        }
+    };
+
+    let storage_config = StorageConfig {
+        backend: storage_backend,
+        workspace: workspace_path.clone(),
+    };
+
+    let storage_manager = StorageManager::new(storage_config)
+        .await
+        .expect("Failed to initialize storage manager");
+
+    let state = AppState::new(token_rate, permits, &workspace_path, storage_manager)
+        .await
+        .expect("Failed to create app state");
 
     // load pending jobs from file
     let json = tokio::fs::read_to_string(state.pending_jobs_path())
@@ -73,15 +140,32 @@ async fn main() {
             String::new()
         });
 
-    let pending = serde_json::from_str::<BTreeSet<Job>>(&json).unwrap_or_default();
+    let pending = serde_json::from_str::<BTreeSet<ConvertJob>>(&json).unwrap_or_default();
     for job in pending {
         info!(job_id = %job.id(), "Loading pending job");
         let upload_path = state.uploads_dir().join(job.id());
         let generator = JobGenerator::new(job, upload_path);
-        _ = state.job_tx.unbounded_send(generator);
+        _ = state.job_tx.unbounded_send(generator.into());
     }
 
-    // 创建 CORS layer
+    // load pending upload jobs from file
+    let upload_json = tokio::fs::read_to_string(state.pending_uploads_path())
+        .await
+        .unwrap_or_else(|error| {
+            info!(%error, "No upload jobs file, creating new one");
+            _ = std::fs::File::create(state.pending_uploads_path())
+                .expect("Failed to create upload jobs file");
+            String::new()
+        });
+
+    let pending_uploads =
+        serde_json::from_str::<BTreeSet<UploadJob>>(&upload_json).unwrap_or_default();
+    for upload_job in pending_uploads {
+        info!(job_id = %upload_job.id(), "Loading pending upload job");
+        _ = state.job_tx.unbounded_send(upload_job.into());
+    }
+
+    // CORS layer
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)

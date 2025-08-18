@@ -6,17 +6,47 @@
 Usage: video-storage [OPTIONS]
 
 Options:
-  -l, --listen-on-port <LISTEN_ON_PORT>  [default: 32145]
-  -p, --permits <PERMITS>                [default: 5]
-  -t, --token-rate <TOKEN_RATE>          [default: 0]
-  -w, --workspace <WORKSPACE>            [default: .]
-  -h, --help                             Print help
-  -V, --version                          Print version
+  -l, --listen-on-port <LISTEN_ON_PORT>
+          [default: 32145]
+  -p, --permits <PERMITS>
+          [default: 5]
+  -t, --token-rate <TOKEN_RATE>
+          [default: 0]
+  -w, --workspace <WORKSPACE>
+          [default: .]
+  -s, --storage-backend <STORAGE_BACKEND>
+          Storage backend: local or s3 [default: local]
+      --s3-bucket <S3_BUCKET>
+          S3 bucket name (required when storage-backend is s3)
+      --s3-endpoint <S3_ENDPOINT>
+          S3 endpoint (for MinIO/custom S3)
+      --s3-region <S3_REGION>
+          S3 region
+      --s3-access-key-id <S3_ACCESS_KEY_ID>
+          S3 access key ID
+      --s3-secret-access-key <S3_SECRET_ACCESS_KEY>
+          S3 secret access key
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+```
+
+for example:
+
+```shell
+video-storage -p 1 \
+-s s3 \
+  --s3-bucket video-storage \
+  --s3-endpoint http://127.0.0.1:9000 \
+  --s3-region us-east-1 \
+  --s3-access-key-id minioadmin \
+  --s3-secret-access-key minioadmin
 ```
 
 ## Check waitlist len
 
-Return the length of waitlist.
+Return the length of convert jobs waitlist.
 
 example:
 

@@ -1,19 +1,19 @@
 use crate::app_state::VIDEO_OBJECTS_DIR;
-use crate::{AppState, Job, TokenBucket};
-
-use std::{convert::Infallible, io::Error as IoError, sync::Arc};
-
-use axum::{
-    body::Body,
-    extract::{Extension, Path as AxumPath, Query},
-    http::{Request, Response, StatusCode, header},
-    response::{IntoResponse, Json},
-};
+use crate::{AppState, ConvertJob, TokenBucket};
+use axum::body::Body;
+use axum::extract::{Extension, Path as AxumPath, Query};
+use axum::http::{Request, Response, StatusCode, header};
+use axum::response::{IntoResponse, Json};
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
 use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
-use tokio::{fs::create_dir_all, io::AsyncSeekExt, sync::Mutex as TokioMutex};
+use std::convert::Infallible;
+use std::io::Error as IoError;
+use std::sync::Arc;
+use tokio::fs::create_dir_all;
+use tokio::io::AsyncSeekExt;
+use tokio::sync::Mutex as TokioMutex;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, warn};
 
@@ -31,7 +31,7 @@ pub(crate) async fn waitlist(Extension(state): Extension<AppState>) -> impl Into
 
 pub(crate) async fn upload_mp4_raw(
     Extension(state): Extension<AppState>,
-    Query(job): Query<Job>,
+    Query(job): Query<ConvertJob>,
     body: Body,
 ) -> impl IntoResponse {
     let job_id = job.id().to_string();
@@ -104,8 +104,7 @@ pub(crate) async fn upload_mp4_raw(
     }
 
     let generator = crate::JobGenerator::new(job, upload_path);
-
-    _ = state.job_tx.unbounded_send(generator);
+    _ = state.job_tx.unbounded_send(generator.into());
 
     (
         StatusCode::ACCEPTED,
