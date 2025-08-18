@@ -6,6 +6,7 @@ mod routes;
 mod stream_map;
 mod token_bucket;
 mod utils;
+mod opendal;
 
 use app_state::AppState;
 use axum::{
