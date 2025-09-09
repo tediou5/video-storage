@@ -67,21 +67,17 @@ token_rate = 0.0
 workspace = "./data"
 
 # Storage configuration
-[storage]
-backend = "s3"  # Options: "local" or "s3"
+storage_backend = "s3"  # Options: "local" or "s3"
 
-# S3 configuration (required when backend = "s3")
-[storage.s3]
-bucket = "video-storage"
-endpoint = "http://127.0.0.1:9000"
-region = "us-east-1"
-access_key_id = "minioadmin"
-secret_access_key = "minioadmin"
+# S3 configuration (required when storage_backend = "s3")
+s3_bucket = "video-storage"
+s3_endpoint = "http://127.0.0.1:9000"
+s3_region = "us-east-1"
+s3_access_key_id = "minioadmin"
+s3_secret_access_key = "minioadmin"
 
 # Webhook configuration (optional)
-[webhook]
-url = "https://example.com/webhook"
-timeout_seconds = 10
+webhook_url = "https://example.com/webhook"
 ```
 
 ## Webhook

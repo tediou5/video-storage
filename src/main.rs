@@ -15,7 +15,6 @@ use axum::{
     extract::Extension,
     routing::{get, post},
 };
-use clap::Parser;
 use config::Config;
 use ffmpeg_next::{self as ffmpeg};
 use job::{ConvertJob, JobGenerator, UploadJob};
@@ -35,85 +34,26 @@ use utils::spawn_hls_job;
 const RESOLUTIONS: [(u32, u32); 3] = [(720, 1280), (540, 960), (480, 854)];
 const BANDWIDTHS: [u32; 3] = [2500000, 1500000, 1000000];
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-pub struct Args {
-    #[arg(short, long, default_value_t = 32145)]
-    listen_on_port: u16,
-    #[arg(short, long, default_value_t = 5)]
-    permits: usize,
-    #[arg(short, long, default_value_t = 0.0)]
-    token_rate: f64,
-    #[arg(short = 'w', long, default_value = ".")]
-    workspace: String,
-
-    /// Configuration file path (overrides all other arguments)
-    #[arg(short, long)]
-    config: Option<String>,
-
-    /// Storage backend: local or s3
-    #[arg(short, long, default_value = "local")]
-    storage_backend: String,
-
-    /// S3 bucket name (required when storage-backend is s3)
-    #[arg(long)]
-    s3_bucket: Option<String>,
-
-    /// S3 endpoint (for MinIO/custom S3)
-    #[arg(long)]
-    s3_endpoint: Option<String>,
-
-    /// S3 region
-    #[arg(long)]
-    s3_region: Option<String>,
-
-    /// S3 access key ID
-    #[arg(long)]
-    s3_access_key_id: Option<String>,
-
-    /// S3 secret access key
-    #[arg(long)]
-    s3_secret_access_key: Option<String>,
-
-    /// Webhook URL to call when jobs complete
-    #[arg(long)]
-    webhook_url: Option<String>,
-}
-
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
-
     tracing_subscriber::fmt::init();
     ffmpeg::init().unwrap();
 
-    // Load configuration
-    let mut config = if let Some(config_path) = &args.config {
-        info!("Loading configuration from: {}", config_path);
-        Config::from_file(std::path::Path::new(config_path))
-            .expect("Failed to load configuration file")
-    } else {
-        Config::default()
-    };
-
-    // Merge CLI arguments with config (CLI takes precedence)
-    config.merge_with_cli(&args);
-
-    // Validate final configuration
-    config.validate().expect("Invalid configuration");
+    // Load configuration from CLI and/or config file
+    let config = Config::load().expect("Failed to load configuration");
 
     // Extract configuration values
     let listen_on_port = config.listen_on_port;
     let permits = config.permits;
     let token_rate = config.token_rate;
     let workspace = config.workspace.clone();
-    let webhook_url = config.webhook.as_ref().map(|w| w.url.clone());
+    let webhook_url = config.webhook_url.clone();
 
     // Parse workspace path
     let workspace_path = PathBuf::from_str(&workspace).expect("Failed to parse workspace dir");
 
     // Configure storage backend
-    let storage_backend = match config.storage.backend.as_str() {
+    let storage_backend = match config.storage_backend.as_str() {
         "local" => {
             info!("Using local filesystem storage");
             StorageBackend::Local
@@ -121,8 +61,7 @@ async fn main() {
         "s3" => {
             info!("Using S3 storage backend");
             let s3_config = config
-                .storage
-                .s3
+                .to_s3_config()
                 .expect("S3 configuration is required when using S3 backend");
             StorageBackend::S3 {
                 bucket: s3_config.bucket,
