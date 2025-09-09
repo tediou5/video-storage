@@ -1,10 +1,5 @@
 use crate::job::JobGenerator;
-use crate::{BANDWIDTHS, Job, RESOLUTIONS};
-
-use std::io::Write as _;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-
+use crate::{BANDWIDTHS, ConvertJob, RESOLUTIONS};
 use ez_ffmpeg::Frame;
 use ez_ffmpeg::container_info::get_duration_us;
 use ez_ffmpeg::filter::frame_filter::FrameFilter;
@@ -12,6 +7,9 @@ use ez_ffmpeg::filter::frame_filter_context::FrameFilterContext;
 use ez_ffmpeg::filter::frame_pipeline_builder::FramePipelineBuilder;
 use ez_ffmpeg::{AVMediaType, Input};
 use ez_ffmpeg::{FfmpegContext, Output};
+use std::io::Write as _;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 
 pub(crate) async fn spawn_hls_job(
@@ -43,13 +41,13 @@ pub(crate) async fn spawn_hls_job(
 
 /// Convert MP4 to a VP9 variant with specified scales.
 pub fn convert_with_scales(
-    job: &Job,
+    job: &ConvertJob,
     input: &Path,
     output: &Path,
     scales: &[(u32, u32)],
     progress_callbacker: Arc<ProgressCallBacker>,
 ) -> anyhow::Result<()> {
-    let Job { id: job_id, crf } = job;
+    let ConvertJob { id: job_id, crf } = job;
 
     let outputs = scales
         .iter()
@@ -98,7 +96,11 @@ pub fn convert_with_scales(
     Ok(builder.outputs(outputs).build()?.start()?.wait()?)
 }
 
-pub(crate) fn create_master_playlist(job: &Job, input: &Path, output: &Path) -> anyhow::Result<()> {
+pub(crate) fn create_master_playlist(
+    job: &ConvertJob,
+    input: &Path,
+    output: &Path,
+) -> anyhow::Result<()> {
     let job_id = job.id();
 
     let input_str = input.to_str().unwrap();

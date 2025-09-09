@@ -1,19 +1,19 @@
 use crate::app_state::VIDEO_OBJECTS_DIR;
-use crate::{AppState, Job, TokenBucket};
-
-use std::{convert::Infallible, io::Error as IoError, sync::Arc};
-
-use axum::{
-    body::Body,
-    extract::{Extension, Path as AxumPath, Query},
-    http::{Request, Response, StatusCode, header},
-    response::{IntoResponse, Json},
-};
+use crate::{AppState, ConvertJob, TokenBucket};
+use axum::body::Body;
+use axum::extract::{Extension, Path as AxumPath, Query};
+use axum::http::{Request, Response, StatusCode, header};
+use axum::response::{IntoResponse, Json};
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
 use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
-use tokio::{fs::create_dir_all, io::AsyncSeekExt, sync::Mutex as TokioMutex};
+use std::convert::Infallible;
+use std::io::Error as IoError;
+use std::sync::Arc;
+use tokio::fs::create_dir_all;
+use tokio::io::AsyncSeekExt;
+use tokio::sync::Mutex as TokioMutex;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, warn};
 
@@ -23,9 +23,31 @@ pub(crate) struct UploadResponse {
     pub(crate) message: String,
 }
 
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WaitlistResponse {
+    pub(crate) pending_convert_jobs: usize,
+    pub(crate) pending_upload_jobs: usize,
+    pub(crate) total_pending_jobs: usize,
+}
+
+#[axum::debug_handler]
+pub(crate) async fn waitlist(Extension(state): Extension<AppState>) -> impl IntoResponse {
+    let convert_jobs = state.job_set.lock().await.len();
+    let upload_jobs = state.upload_job_set.lock().await.len();
+
+    (
+        StatusCode::OK,
+        Json(WaitlistResponse {
+            pending_convert_jobs: convert_jobs,
+            pending_upload_jobs: upload_jobs,
+            total_pending_jobs: convert_jobs + upload_jobs,
+        }),
+    )
+}
+
 pub(crate) async fn upload_mp4_raw(
     Extension(state): Extension<AppState>,
-    Query(job): Query<Job>,
+    Query(job): Query<ConvertJob>,
     body: Body,
 ) -> impl IntoResponse {
     let job_id = job.id().to_string();
@@ -98,8 +120,7 @@ pub(crate) async fn upload_mp4_raw(
     }
 
     let generator = crate::JobGenerator::new(job, upload_path);
-
-    _ = state.job_tx.unbounded_send(generator);
+    _ = state.job_tx.unbounded_send(generator.into());
 
     (
         StatusCode::ACCEPTED,

@@ -6,12 +6,113 @@
 Usage: video-storage [OPTIONS]
 
 Options:
-  -l, --listen-on-port <LISTEN_ON_PORT>  [default: 32145]
-  -p, --permits <PERMITS>                [default: 5]
-  -t, --token-rate <TOKEN_RATE>          [default: 0]
-  -w, --workspace <WORKSPACE>            [default: .]
-  -h, --help                             Print help
-  -V, --version                          Print version
+  -l, --listen-on-port <LISTEN_ON_PORT>
+          [default: 32145]
+  -p, --permits <PERMITS>
+          [default: 5]
+  -t, --token-rate <TOKEN_RATE>
+          [default: 0]
+  -w, --workspace <WORKSPACE>
+          [default: .]
+  -c, --config <CONFIG>
+          Configuration file path (overrides all other arguments)
+  -s, --storage-backend <STORAGE_BACKEND>
+          Storage backend: local or s3 [default: local]
+      --s3-bucket <S3_BUCKET>
+          S3 bucket name (required when storage-backend is s3)
+      --s3-endpoint <S3_ENDPOINT>
+          S3 endpoint (for MinIO/custom S3)
+      --s3-region <S3_REGION>
+          S3 region
+      --s3-access-key-id <S3_ACCESS_KEY_ID>
+          S3 access key ID
+      --s3-secret-access-key <S3_SECRET_ACCESS_KEY>
+          S3 secret access key
+      --webhook-url <WEBHOOK_URL>
+          Webhook URL to call when jobs complete
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+```
+
+## Examples
+
+### Using command line arguments
+
+```shell
+video-storage -p 1 \
+  -s s3 \
+  --s3-bucket video-storage \
+  --s3-endpoint http://127.0.0.1:9000 \
+  --s3-region us-east-1 \
+  --s3-access-key-id minioadmin \
+  --s3-secret-access-key minioadmin \
+  --webhook-url https://example.com/webhook
+```
+
+### Using configuration file
+
+```shell
+video-storage -c config.toml
+```
+
+Example config.toml:
+
+```toml
+# Server configuration
+listen_on_port = 32145
+permits = 5
+token_rate = 0.0
+workspace = "./data"
+
+# Storage configuration
+storage_backend = "s3"  # Options: "local" or "s3"
+
+# S3 configuration (required when storage_backend = "s3")
+s3_bucket = "video-storage"
+s3_endpoint = "http://127.0.0.1:9000"
+s3_region = "us-east-1"
+s3_access_key_id = "minioadmin"
+s3_secret_access_key = "minioadmin"
+
+# Webhook configuration (optional)
+webhook_url = "https://example.com/webhook"
+```
+
+## Webhook
+
+When configured with `--webhook-url` or in config file, the service will send a POST request to the webhook URL when jobs complete.
+
+Webhook payload format:
+
+```json
+{
+  "job_id": "video",
+  "job_type": "convert",  // or "upload"
+  "status": "completed",
+  "timestamp": "2025-01-09T12:34:56Z"
+}
+```
+
+## Check waitlist
+
+Returns JSON with pending job counts.
+
+example:
+
+```shell
+curl -X GET http://127.0.0.1:32145/waitlist
+```
+
+response:
+
+```json
+{
+  "pending_convert_jobs": 2,
+  "pending_upload_jobs": 1,
+  "total_pending_jobs": 3
+}
 ```
 
 ## Upload video

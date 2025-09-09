@@ -1,17 +1,32 @@
-use std::path::PathBuf;
-
+use crate::app_state::AppState;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use tracing::error;
 
-use crate::app_state::AppState;
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct UploadJob {
+    pub(crate) id: String,
+    pub(crate) path: PathBuf,
+}
+
+impl UploadJob {
+    #[allow(unused)]
+    pub(crate) fn new(id: String, path: PathBuf) -> Self {
+        Self { id, path }
+    }
+
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Job {
+pub(crate) struct ConvertJob {
     pub(crate) id: String,
     pub(crate) crf: u8, // 0-63
 }
 
-impl Job {
+impl ConvertJob {
     pub(crate) fn id(&self) -> &str {
         &self.id
     }
@@ -19,12 +34,12 @@ impl Job {
 
 #[derive(Clone, Debug)]
 pub(crate) struct JobGenerator {
-    pub(crate) job: Job,
+    pub(crate) job: ConvertJob,
     pub(crate) upload_path: PathBuf,
 }
 
 impl JobGenerator {
-    pub(crate) fn new(job: Job, upload_path: PathBuf) -> Self {
+    pub(crate) fn new(job: ConvertJob, upload_path: PathBuf) -> Self {
         Self { job, upload_path }
     }
 
