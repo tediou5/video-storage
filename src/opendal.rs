@@ -58,7 +58,6 @@ impl StorageManager {
         Ok(Self { operator, config })
     }
 
-    #[allow(unused)]
     pub fn operator(&self) -> &Operator {
         &self.operator
     }
