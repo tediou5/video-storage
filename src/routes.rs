@@ -170,14 +170,12 @@ async fn try_serve_from_filesystem(
 }
 
 async fn try_serve_from_s3(
-    filename: String,
+    s3_key: String,
     start: u64,
     end: u64,
     operator: Operator,
     token_rate: f64,
 ) -> Result<impl futures::Stream<Item = Result<Bytes, IoError>> + Send, String> {
-    // S3 path is videos/filename (without job_id directory)
-    let s3_key = format!("videos/{}", filename);
     debug!(%s3_key, "Attempting to fetch from S3");
 
     // Read the specific range from S3
@@ -193,7 +191,7 @@ async fn try_serve_from_s3(
     let chunks: Vec<Bytes> = data
         .to_bytes()
         .chunks(8 * 1024 * 1024) // 8MB chunks
-        .map(|chunk| Bytes::copy_from_slice(chunk))
+        .map(Bytes::copy_from_slice)
         .collect();
 
     let stream = futures::stream::iter(chunks).then(move |chunk| {
@@ -231,90 +229,10 @@ pub(crate) async fn serve_video(
 
     // First, try to get file size from local filesystem
     let local_path = state.videos_dir().join(job_id).join(&filename);
-    debug!(%job_id, %filename, ?local_path, "Request server file");
+    let s3_key = format!("videos/{}", filename);
+    debug!(%job_id, %filename, ?local_path, ?s3_key, "Request server file");
 
-    let file_size = if let Ok(metadata) = tokio::fs::metadata(&local_path).await {
-        Some(metadata.len())
-    } else if state.storage_manager.is_remote() {
-        // Try to get size from S3
-        let s3_key = format!("videos/{}", filename);
-        state
-            .storage_manager
-            .operator()
-            .stat(&s3_key)
-            .await
-            .inspect_err(|error| debug!(?error, "file state not found in s3"))
-            .map(|m| m.content_length())
-            .ok()
-    } else {
-        debug!(%job_id, %filename, "file metadata not found");
-        None
-    };
-
-    let Some(size) = file_size else {
-        debug!(%job_id, %filename, "file size not found");
-        return Ok(file_not_found());
-    };
-
-    let (status, start, end) = parse_range(&req, size);
-    let len = end - start + 1;
-
-    // Try to get stream from filesystem first, then S3
-    let maybe_res = if let Ok(stream) =
-        try_serve_from_filesystem(local_path.clone(), start, end, state.token_rate).await
-    {
-        debug!(%filename, "Serving from filesystem");
-        Some(Response::new(Body::from_stream(stream)))
-    } else if state.storage_manager.is_remote() {
-        let operator = state.storage_manager.operator().clone();
-        match try_serve_from_s3(filename.clone(), start, end, operator, state.token_rate).await {
-            Ok(stream) => {
-                debug!(%filename, "Serving from S3");
-                Some(Response::new(Body::from_stream(stream)))
-            }
-            Err(e) => {
-                error!(%filename, ?e, "Failed to serve from S3");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let Some(mut res) = maybe_res else {
-        return Ok(file_not_found());
-    };
-
-    *res.status_mut() = status;
-    let headers = res.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        from_path(&filename)
-            .first_or_octet_stream()
-            .to_string()
-            .parse()
-            .unwrap(),
-    );
-    headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
-    headers.insert(
-        header::CACHE_CONTROL,
-        "public,max-age=3600".parse().unwrap(),
-    );
-    headers.insert(header::CONTENT_LENGTH, len.to_string().parse().unwrap());
-    if status == StatusCode::PARTIAL_CONTENT {
-        headers.insert(
-            header::CONTENT_RANGE,
-            format!("bytes {start}-{end}/{size}").parse().unwrap(),
-        );
-    }
-    Ok(res)
-}
-
-fn file_not_found() -> Response<Body> {
-    Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("File not found"))
-        .unwrap()
+    server_file(state, local_path, s3_key, filename, req).await
 }
 
 fn parse_range(req: &Request<Body>, file_size: u64) -> (StatusCode, u64, u64) {
@@ -405,6 +323,23 @@ pub(crate) async fn upload_files(
         }
     }
 
+    // Upload to S3 if remote storage is configured
+    if state.storage_manager.is_remote() {
+        let s3_key = format!("videos/{}/{}/{}", job_id, VIDEO_OBJECTS_DIR, name);
+        debug!(%s3_key, "Uploading video object to S3");
+
+        if let Err(e) = state
+            .storage_manager
+            .operator()
+            .write(&s3_key, tokio::fs::read(&upload_path).await.unwrap())
+            .await
+        {
+            error!(%job_id, %name, ?e, "Failed to upload video object to S3");
+        } else {
+            info!(%job_id, %name, "Video object uploaded to S3 successfully");
+        }
+    }
+
     (
         StatusCode::OK,
         Json(UploadResponse {
@@ -414,58 +349,84 @@ pub(crate) async fn upload_files(
     )
 }
 
-pub(crate) async fn serve_video_object(
+pub(crate) fn serve_video_object(
     Extension(state): Extension<AppState>,
     AxumPath((job_id, filename)): AxumPath<(String, String)>,
     req: Request<Body>,
-) -> Result<Response<Body>, Infallible> {
-    let path = state
+) -> impl Future<Output = Result<Response<Body>, Infallible>> {
+    // First, try to get file size from local filesystem
+    let local_path = state
         .videos_dir()
         .join(&job_id)
         .join(VIDEO_OBJECTS_DIR)
         .join(&filename);
-    debug!(%job_id, %filename, ?path, "Request server file");
+    let s3_key = format!("videos/{}/{}/{}", job_id, VIDEO_OBJECTS_DIR, filename);
+    debug!(%job_id, %filename, ?local_path, ?s3_key, "Request server video object file");
 
-    let Ok(mut fh) = tokio::fs::File::open(&path).await else {
+    server_file(state, local_path, s3_key, filename, req)
+}
+
+async fn server_file(
+    state: AppState,
+    local_path: PathBuf,
+    s3_key: String,
+    filename: String,
+    req: Request<Body>,
+) -> Result<Response<Body>, Infallible> {
+    let maybe_filesize = if let Ok(metadata) = tokio::fs::metadata(&local_path).await {
+        Some((metadata.len(), false))
+    } else if state.storage_manager.is_remote() {
+        // Try to get size from S3
+        state
+            .storage_manager
+            .operator()
+            .stat(&s3_key)
+            .await
+            .ok()
+            .map(|m| (m.content_length(), true))
+    } else {
+        None
+    };
+
+    let Some((size, read_from_s3)) = maybe_filesize else {
         return Ok(file_not_found());
     };
-    let Ok(metadata) = fh.metadata().await else {
-        return Ok(file_not_found());
-    };
-
-    let size = metadata.len();
 
     let (status, start, end) = parse_range(&req, size);
-    fh.seek(std::io::SeekFrom::Start(start)).await.unwrap(); // seek to start, just panic if failed
     let len = end - start + 1;
 
-    let bucket = Arc::new(TokioMutex::new(TokenBucket::new(
-        state.token_rate,
-        state.token_rate,
-    )));
+    let maybe_res = if read_from_s3 {
+        let operator = state.storage_manager.operator().clone();
 
-    use tokio::io::AsyncReadExt as _;
-    let stream = ReaderStream::new(fh.take(len))
-        .map_err(|e| IoError::new(e.kind(), e.to_string()))
-        .then(move |res| {
-            let bucket = bucket.clone();
-            async move {
-                match res {
-                    Ok(chunk) => {
-                        bucket.lock().await.consume(chunk.len()).await;
-                        Ok::<Bytes, IoError>(chunk)
-                    }
-                    Err(e) => Err(e),
-                }
-            }
-        });
+        try_serve_from_s3(s3_key, start, end, operator, state.token_rate)
+            .await
+            .map(|stream| {
+                debug!(%filename, "Serving video object from S3");
+                Response::new(Body::from_stream(stream))
+            })
+            .inspect_err(|error| {
+                error!(%filename, ?error, "Failed to serve video object from S3");
+            })
+    } else {
+        try_serve_from_filesystem(local_path.clone(), start, end, state.token_rate)
+            .await
+            .map(|stream| {
+                debug!(%filename, "Serving video object from filesystem");
+                Response::new(Body::from_stream(stream))
+            })
+            .inspect_err(|error| {
+                error!(%filename, ?error, "Failed to serve video object from filesystem");
+            })
+    };
 
-    let mut res = Response::new(Body::from_stream(stream));
+    let Ok(mut res) = maybe_res else {
+        return Ok(file_not_found());
+    };
     *res.status_mut() = status;
     let headers = res.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
-        from_path(&path)
+        from_path(&filename)
             .first_or_octet_stream()
             .to_string()
             .parse()
@@ -484,4 +445,11 @@ pub(crate) async fn serve_video_object(
         );
     }
     Ok(res)
+}
+
+fn file_not_found() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("File not found"))
+        .unwrap()
 }
