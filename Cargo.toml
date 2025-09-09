@@ -32,5 +32,8 @@ tokio-stream = "0.1.17"
 tower-http = { version = "0.6.4", features = ["cors", "trace"] }
 hyper = "1.6.0"
 clap = { version = "4.5.38", features = ["derive"] }
+toml = "0.8"
+reqwest = { version = "0.12", features = ["json"] }
+chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2.5.0"
 opendal = { version = "0.54", features = ["services-s3", "services-fs", "layers-mime-guess"] }

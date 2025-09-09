@@ -2,6 +2,7 @@ use crate::opendal::StorageManager;
 use crate::{ConvertJob, JobGenerator, StreamMap, UploadJob};
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -67,6 +68,7 @@ pub(crate) struct AppState {
     pub(crate) upload_job_set: Arc<TokioMutex<BTreeSet<UploadJob>>>,
     pub(crate) job_tx: UnboundedSender<Job>,
     pub(crate) storage_manager: Arc<StorageManager>,
+    pub(crate) webhook_url: Option<String>,
 
     temp_dir: PathBuf,
     videos_dir: PathBuf,
@@ -81,6 +83,7 @@ impl AppState {
         permits: usize,
         workspace: &Path,
         storage_manager: StorageManager,
+        webhook_url: Option<String>,
     ) -> std::io::Result<Self> {
         init_workspace(workspace).await?;
         let (tx, rx) = unbounded();
@@ -90,6 +93,7 @@ impl AppState {
             upload_job_set: Arc::default(),
             job_tx: tx,
             storage_manager: Arc::new(storage_manager),
+            webhook_url,
 
             temp_dir: workspace.join(TEMP_DIR),
             uploads_dir: workspace.join(UPLOADS_DIR),
@@ -120,6 +124,42 @@ impl AppState {
 
     pub(crate) fn pending_uploads_path(&self) -> &Path {
         self.pending_uploads_path.as_path()
+    }
+
+    async fn call_webhook(&self, job_id: &str, job_type: &str, status: &str) {
+        if let Some(webhook_url) = &self.webhook_url {
+            let payload = json!({
+                "job_id": job_id,
+                "job_type": job_type,
+                "status": status,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+
+            let client = reqwest::Client::new();
+            match client
+                .post(webhook_url)
+                .json(&payload)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        info!(job_id, webhook_url, "Webhook called successfully");
+                    } else {
+                        warn!(
+                            job_id,
+                            webhook_url,
+                            status = %response.status(),
+                            "Webhook returned non-success status"
+                        );
+                    }
+                }
+                Err(err) => {
+                    error!(job_id, webhook_url, ?err, "Failed to call webhook");
+                }
+            }
+        }
     }
 
     fn handle_jobs(&self, rx: UnboundedReceiver<Job>, permits: usize) {
@@ -237,10 +277,9 @@ impl AppState {
                                         };
                                         info!(id, "Creating upload job for remote storage");
                                         _ = this.job_tx.unbounded_send(upload_job.into());
-                                    } else {
-                                        info!(id, "Skipping upload job for local storage");
-                                        // TODO: Call Hook
                                     }
+
+                                    this.call_webhook(&id, "convert", "completed").await;
                             },
                             Ok(job_kind) if job_kind == Job::KIND_UPLOAD => {
                                 info!("Upload Job {id} completed successfully");
@@ -250,7 +289,8 @@ impl AppState {
                                 let dump = serde_json::to_string(&*ujs).unwrap();
                                 // update uploads file
                                 _ = tokio::fs::write(this.pending_uploads_path(), dump).await;
-                                // TODO: Call Hook and cleanup local files
+                                // Call webhook after successful upload
+                                this.call_webhook(&id, "upload", "completed").await;
                                 _ = tokio::fs::remove_file(this.videos_dir.join(id)).await;
                             },
                             Err(job) => {

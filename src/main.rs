@@ -1,5 +1,6 @@
 mod app_state;
 mod bucket;
+mod config;
 mod job;
 mod middleware;
 mod opendal;
@@ -15,6 +16,7 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
+use config::Config;
 use ffmpeg_next::{self as ffmpeg};
 use job::{ConvertJob, JobGenerator, UploadJob};
 use opendal::{StorageBackend, StorageConfig, StorageManager};
@@ -35,15 +37,19 @@ const BANDWIDTHS: [u32; 3] = [2500000, 1500000, 1000000];
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Args {
+pub struct Args {
     #[arg(short, long, default_value_t = 32145)]
     listen_on_port: u16,
     #[arg(short, long, default_value_t = 5)]
     permits: usize,
     #[arg(short, long, default_value_t = 0.0)]
     token_rate: f64,
-    #[arg(short, long, default_value = ".")]
+    #[arg(short = 'w', long, default_value = ".")]
     workspace: String,
+
+    /// Configuration file path (overrides all other arguments)
+    #[arg(short, long)]
+    config: Option<String>,
 
     /// Storage backend: local or s3
     #[arg(short, long, default_value = "local")]
@@ -68,45 +74,62 @@ struct Args {
     /// S3 secret access key
     #[arg(long)]
     s3_secret_access_key: Option<String>,
+
+    /// Webhook URL to call when jobs complete
+    #[arg(long)]
+    webhook_url: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
-    let Args {
-        listen_on_port,
-        permits,
-        token_rate,
-        workspace,
-        storage_backend,
-        s3_bucket,
-        s3_endpoint,
-        s3_region,
-        s3_access_key_id,
-        s3_secret_access_key,
-    } = Args::parse();
+    let args = Args::parse();
 
     tracing_subscriber::fmt::init();
     ffmpeg::init().unwrap();
+
+    // Load configuration
+    let mut config = if let Some(config_path) = &args.config {
+        info!("Loading configuration from: {}", config_path);
+        Config::from_file(std::path::Path::new(config_path))
+            .expect("Failed to load configuration file")
+    } else {
+        Config::default()
+    };
+
+    // Merge CLI arguments with config (CLI takes precedence)
+    config.merge_with_cli(&args);
+
+    // Validate final configuration
+    config.validate().expect("Invalid configuration");
+
+    // Extract configuration values
+    let listen_on_port = config.listen_on_port;
+    let permits = config.permits;
+    let token_rate = config.token_rate;
+    let workspace = config.workspace.clone();
+    let webhook_url = config.webhook.as_ref().map(|w| w.url.clone());
 
     // Parse workspace path
     let workspace_path = PathBuf::from_str(&workspace).expect("Failed to parse workspace dir");
 
     // Configure storage backend
-    let storage_backend = match storage_backend.as_str() {
+    let storage_backend = match config.storage.backend.as_str() {
         "local" => {
             info!("Using local filesystem storage");
             StorageBackend::Local
         }
         "s3" => {
             info!("Using S3 storage backend");
+            let s3_config = config
+                .storage
+                .s3
+                .expect("S3 configuration is required when using S3 backend");
             StorageBackend::S3 {
-                bucket: s3_bucket.expect("S3 bucket is required when using S3 backend"),
-                endpoint: s3_endpoint,
-                region: s3_region,
-                access_key_id: s3_access_key_id
-                    .expect("AWS_ACCESS_KEY_ID is required when using S3 backend"),
-                secret_access_key: s3_secret_access_key
-                    .expect("AWS_SECRET_ACCESS_KEY is required when using S3 backend"),
+                bucket: s3_config.bucket,
+                endpoint: s3_config.endpoint,
+                region: s3_config.region,
+                access_key_id: s3_config.access_key_id,
+                secret_access_key: s3_config.secret_access_key,
             }
         }
         backend => {
@@ -126,9 +149,15 @@ async fn main() {
         .await
         .expect("Failed to initialize storage manager");
 
-    let state = AppState::new(token_rate, permits, &workspace_path, storage_manager)
-        .await
-        .expect("Failed to create app state");
+    let state = AppState::new(
+        token_rate,
+        permits,
+        &workspace_path,
+        storage_manager,
+        webhook_url,
+    )
+    .await
+    .expect("Failed to create app state");
 
     // load pending jobs from file
     let json = tokio::fs::read_to_string(state.pending_jobs_path())

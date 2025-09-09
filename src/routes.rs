@@ -23,10 +23,26 @@ pub(crate) struct UploadResponse {
     pub(crate) message: String,
 }
 
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WaitlistResponse {
+    pub(crate) pending_convert_jobs: usize,
+    pub(crate) pending_upload_jobs: usize,
+    pub(crate) total_pending_jobs: usize,
+}
+
 #[axum::debug_handler]
 pub(crate) async fn waitlist(Extension(state): Extension<AppState>) -> impl IntoResponse {
-    let len = state.job_set.lock().await.len().to_string();
-    (StatusCode::OK, len)
+    let convert_jobs = state.job_set.lock().await.len();
+    let upload_jobs = state.upload_job_set.lock().await.len();
+
+    (
+        StatusCode::OK,
+        Json(WaitlistResponse {
+            pending_convert_jobs: convert_jobs,
+            pending_upload_jobs: upload_jobs,
+            total_pending_jobs: convert_jobs + upload_jobs,
+        }),
+    )
 }
 
 pub(crate) async fn upload_mp4_raw(

@@ -14,6 +14,8 @@ Options:
           [default: 0]
   -w, --workspace <WORKSPACE>
           [default: .]
+  -c, --config <CONFIG>
+          Configuration file path (overrides all other arguments)
   -s, --storage-backend <STORAGE_BACKEND>
           Storage backend: local or s3 [default: local]
       --s3-bucket <S3_BUCKET>
@@ -26,33 +28,95 @@ Options:
           S3 access key ID
       --s3-secret-access-key <S3_SECRET_ACCESS_KEY>
           S3 secret access key
+      --webhook-url <WEBHOOK_URL>
+          Webhook URL to call when jobs complete
   -h, --help
           Print help
   -V, --version
           Print version
 ```
 
-for example:
+## Examples
+
+### Using command line arguments
 
 ```shell
 video-storage -p 1 \
--s s3 \
+  -s s3 \
   --s3-bucket video-storage \
   --s3-endpoint http://127.0.0.1:9000 \
   --s3-region us-east-1 \
   --s3-access-key-id minioadmin \
-  --s3-secret-access-key minioadmin
+  --s3-secret-access-key minioadmin \
+  --webhook-url https://example.com/webhook
 ```
 
-## Check waitlist len
+### Using configuration file
 
-Return the length of convert jobs waitlist.
+```shell
+video-storage -c config.toml
+```
+
+Example config.toml:
+
+```toml
+# Server configuration
+listen_on_port = 32145
+permits = 5
+token_rate = 0.0
+workspace = "./data"
+
+# Storage configuration
+[storage]
+backend = "s3"  # Options: "local" or "s3"
+
+# S3 configuration (required when backend = "s3")
+[storage.s3]
+bucket = "video-storage"
+endpoint = "http://127.0.0.1:9000"
+region = "us-east-1"
+access_key_id = "minioadmin"
+secret_access_key = "minioadmin"
+
+# Webhook configuration (optional)
+[webhook]
+url = "https://example.com/webhook"
+timeout_seconds = 10
+```
+
+## Webhook
+
+When configured with `--webhook-url` or in config file, the service will send a POST request to the webhook URL when jobs complete.
+
+Webhook payload format:
+
+```json
+{
+  "job_id": "video",
+  "job_type": "convert",  // or "upload"
+  "status": "completed",
+  "timestamp": "2025-01-09T12:34:56Z"
+}
+```
+
+## Check waitlist
+
+Returns JSON with pending job counts.
 
 example:
 
 ```shell
-curl --fail -X GET http://127.0.0.1:32145/waitlist
-6
+curl -X GET http://127.0.0.1:32145/waitlist
+```
+
+response:
+
+```json
+{
+  "pending_convert_jobs": 2,
+  "pending_upload_jobs": 1,
+  "total_pending_jobs": 3
+}
 ```
 
 ## Upload video
