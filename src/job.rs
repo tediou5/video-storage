@@ -1,22 +1,25 @@
 use crate::app_state::AppState;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::error;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct UploadJob {
     pub(crate) id: String,
-    pub(crate) path: PathBuf,
 }
 
 impl UploadJob {
     #[allow(unused)]
-    pub(crate) fn new(id: String, path: PathBuf) -> Self {
-        Self { id, path }
+    pub(crate) fn new(id: String) -> Self {
+        Self { id }
     }
 
     pub(crate) fn id(&self) -> &str {
         &self.id
+    }
+
+    pub(crate) fn path(&self, video_dir: &Path) -> PathBuf {
+        video_dir.join(&self.id)
     }
 }
 

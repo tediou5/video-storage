@@ -166,6 +166,7 @@ impl AppState {
         info!(permits, "Job handler started");
         let this = self.clone();
         let semaphore = Arc::new(Semaphore::new(permits));
+        let upload_semaphore = Arc::new(Semaphore::new(permits));
 
         tokio::spawn(async move {
             debug!("Job handler started #1");
@@ -220,7 +221,7 @@ impl AppState {
                             Job::Upload(upload_job) => {
                                 let id = upload_job.id().to_string();
                                 let this_c = this.clone();
-                                let semaphore_c = semaphore.clone();
+                                let semaphore_c = upload_semaphore.clone();
                                 let upload_job_clone = upload_job.clone();
 
                                 let task = async move {
@@ -230,7 +231,7 @@ impl AppState {
                                     info!(id = %upload_job.id(), "Upload job started");
 
                                     let result = this_c.storage_manager
-                                        .upload_directory(upload_job.path.clone(), "videos")
+                                        .upload_directory(upload_job.path(this_c.videos_dir()), "videos")
                                         .await
                                         .map_err(|error| {
                                             error!(%error, id = %upload_job.id(), "Upload failed, retry later");
@@ -270,10 +271,8 @@ impl AppState {
 
                                     // Create upload job if using remote storage
                                     if this.storage_manager.is_remote() {
-                                        let videos_path = this.videos_dir().join(&id);
                                         let upload_job = UploadJob {
                                             id: id.clone(),
-                                            path: videos_path,
                                         };
                                         info!(id, "Creating upload job for remote storage");
                                         _ = this.job_tx.unbounded_send(upload_job.into());
@@ -291,7 +290,7 @@ impl AppState {
                                 _ = tokio::fs::write(this.pending_uploads_path(), dump).await;
                                 // Call webhook after successful upload
                                 this.call_webhook(&id, "upload", "completed").await;
-                                _ = tokio::fs::remove_file(this.videos_dir.join(id)).await;
+                                _ = tokio::fs::remove_dir_all(this.videos_dir.join(id)).await;
                             },
                             Err(job) => {
                                 warn!(job_id=%job.id(), job_kind=%job.kind(), "Retry job");
