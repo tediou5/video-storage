@@ -13,7 +13,7 @@ ffmpeg-next = { version = "7.1.0", features = [
     "build-lib-opus",
     "build-lib-vpx",
 ] }
-ez-ffmpeg = { version = "0.5.3" }
+ez-ffmpeg = { git = "https://github.com/YeautyYE/ez-ffmpeg.git", rev = "c1d3f6650a6468c07dcf6be62869702b4efdc663" }
 futures = "0.3"
 mime_guess = "2"
 
