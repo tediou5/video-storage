@@ -1,5 +1,9 @@
 # video storage
 
+## Development
+
+For development setup and build instructions, see [Development Guide](docs/development.md).
+
 ## Cli
 
 ```text
