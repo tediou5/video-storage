@@ -40,10 +40,12 @@ impl TestServer {
         let test_id = uuid::Uuid::new_v4().to_string();
         let workspace = format!("/tmp/test-workspace-{test_id}");
 
-        let mut config = Config::default();
-        config.listen_on_port = e_port;
-        config.internal_addr = format!("127.0.0.1:{i_port}");
-        config.workspace = workspace.clone();
+        let config = Config {
+            listen_on_port: e_port,
+            internal_addr: format!("127.0.0.1:{i_port}"),
+            workspace: workspace.clone(),
+            ..Default::default()
+        };
 
         let handle = tokio::spawn(async move {
             video_storage::run(config).await;
@@ -60,14 +62,14 @@ impl TestServer {
         // Poll until server is ready
         for _ in 0..3 {
             if let Ok(response) = client
-                .get(&format!("http://127.0.0.1:{i_port}/waitlist"))
+                .get(format!("http://127.0.0.1:{i_port}/waitlist"))
                 .send()
                 .await
+                && response.status().is_success()
             {
-                if response.status().is_success() {
-                    break;
-                }
+                break;
             }
+
             sleep(Duration::from_millis(10)).await;
         }
 

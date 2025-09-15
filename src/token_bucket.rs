@@ -215,7 +215,7 @@ mod tests {
 
         // Available tokens should be around 5
         let available = bucket.available_tokens();
-        assert!(available >= 4.0 && available <= 6.0);
+        assert!((4.0..=6.0).contains(&available));
     }
 
     #[tokio::test]
