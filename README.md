@@ -53,6 +53,13 @@ Options:
 ### Building from source
 
 ```shell
+# Using Makefile (recommended)
+make build        # Build release binary
+make test         # Run tests with nextest
+make check        # Run clippy checks
+make all          # Run fmt, check, build, and test
+
+# Using Cargo directly
 # The project uses rust-toolchain.toml to automatically select nightly
 cargo build --release
 ```

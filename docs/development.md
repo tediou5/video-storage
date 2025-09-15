@@ -109,6 +109,32 @@ rustup component add clippy
 
 **Note**: The project uses Rust nightly features. The `rust-toolchain.toml` file will automatically select the correct version.
 
+### Using Makefile
+
+The project includes a Makefile for common development tasks:
+
+```bash
+# Build release binary
+make build
+
+# Run tests with nextest
+make test
+
+# Run clippy checks
+make check
+
+# Format code
+make fmt
+
+# Run all (fmt, check, build, test)
+make all
+
+# Show all available commands
+make help
+```
+
+### Using Cargo directly
+
 ```bash
 # Debug build
 cargo build
