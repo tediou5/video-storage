@@ -1,0 +1,243 @@
+name: CI
+
+on:
+    push:
+        branches: [main, master, develop]
+    pull_request:
+        branches: [main, master, develop]
+
+env:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+    RUST_VERSION: stable
+
+jobs:
+    # First job: Install dependencies and build, then cache everything
+    setup-and-build:
+        name: Setup and Build
+        runs-on: ubuntu-latest
+        outputs:
+            cache-key: ${{ steps.cache-key.outputs.key }}
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Generate cache key
+              id: cache-key
+              run: echo "key=${{ runner.os }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('**/Cargo.lock') }}" >> $GITHUB_OUTPUT
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
+
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                    libavcodec-dev \
+                    libavformat-dev \
+                    libavutil-dev \
+                    libswscale-dev \
+                    libavfilter-dev \
+                    libavdevice-dev \
+                    clang \
+                    pkg-config
+
+            - name: Install cargo-nextest
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: cargo-nextest
+
+            - name: Cache cargo registry and build
+              uses: actions/cache@v3
+              id: cache
+              with:
+                  path: |
+                      ~/.cargo/bin/
+                      ~/.cargo/registry/index/
+                      ~/.cargo/registry/cache/
+                      ~/.cargo/git/db/
+                      target/
+                  key: ${{ steps.cache-key.outputs.key }}
+                  restore-keys: |
+                      ${{ runner.os }}-rust-${{ env.RUST_VERSION }}-
+
+            - name: Build all targets
+              run: |
+                  cargo build --all-targets --all-features
+                  cargo build --release --all-features
+
+            - name: Upload build artifacts
+              uses: actions/upload-artifact@v3
+              with:
+                  name: build-artifacts
+                  path: target/
+                  retention-days: 1
+
+    # Parallel jobs that depend on setup-and-build
+    fmt:
+        name: Format Check
+        needs: setup-and-build
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt
+
+            - name: Check formatting
+              run: cargo fmt --all -- --check
+
+    clippy:
+        name: Clippy Check
+        needs: setup-and-build
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: clippy
+
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                    libavcodec-dev \
+                    libavformat-dev \
+                    libavutil-dev \
+                    libswscale-dev \
+                    libavfilter-dev \
+                    libavdevice-dev \
+                    clang \
+                    pkg-config
+
+            - name: Download build artifacts
+              uses: actions/download-artifact@v3
+              with:
+                  name: build-artifacts
+                  path: target/
+
+            - name: Cache cargo registry
+              uses: actions/cache@v3
+              with:
+                  path: |
+                      ~/.cargo/bin/
+                      ~/.cargo/registry/index/
+                      ~/.cargo/registry/cache/
+                      ~/.cargo/git/db/
+                  key: ${{ needs.setup-and-build.outputs.cache-key }}
+                  restore-keys: |
+                      ${{ runner.os }}-rust-${{ env.RUST_VERSION }}-
+
+            - name: Run clippy
+              run: cargo clippy --all-targets --all-features -- -D warnings
+
+    test:
+        name: Test Suite
+        needs: setup-and-build
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                test-type: [nextest, doc]
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                    libavcodec-dev \
+                    libavformat-dev \
+                    libavutil-dev \
+                    libswscale-dev \
+                    libavfilter-dev \
+                    libavdevice-dev \
+                    clang \
+                    pkg-config
+
+            - name: Install cargo-nextest
+              if: matrix.test-type == 'nextest'
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: cargo-nextest
+
+            - name: Download build artifacts
+              uses: actions/download-artifact@v3
+              with:
+                  name: build-artifacts
+                  path: target/
+
+            - name: Cache cargo registry
+              uses: actions/cache@v3
+              with:
+                  path: |
+                      ~/.cargo/bin/
+                      ~/.cargo/registry/index/
+                      ~/.cargo/registry/cache/
+                      ~/.cargo/git/db/
+                  key: ${{ needs.setup-and-build.outputs.cache-key }}
+                  restore-keys: |
+                      ${{ runner.os }}-rust-${{ env.RUST_VERSION }}-
+
+            - name: Run tests with nextest
+              if: matrix.test-type == 'nextest'
+              run: cargo nextest run --all-features
+
+            - name: Run doc tests
+              if: matrix.test-type == 'doc'
+              run: cargo test --doc --all-features
+
+    verify-binary:
+        name: Verify Binary
+        needs: setup-and-build
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                    libavcodec-dev \
+                    libavformat-dev \
+                    libavutil-dev \
+                    libswscale-dev \
+                    libavfilter-dev \
+                    libavdevice-dev
+
+            - name: Download build artifacts
+              uses: actions/download-artifact@v3
+              with:
+                  name: build-artifacts
+                  path: target/
+
+            - name: Make binary executable
+              run: chmod +x ./target/release/video-storage
+
+            - name: Check binary
+              run: |
+                  ./target/release/video-storage --version || true
+                  ./target/release/video-storage --help
+
+    # Final status check job
+    ci-success:
+        name: CI Success
+        if: always()
+        needs: [fmt, clippy, test, verify-binary]
+        runs-on: ubuntu-latest
+        steps:
+            - name: Check all job results
+              run: |
+                  if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+                    echo "One or more jobs failed"
+                    exit 1
+                  else
+                    echo "All jobs passed successfully"
+                  fi

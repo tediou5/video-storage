@@ -1,4 +1,5 @@
 use crate::app_state::VIDEO_OBJECTS_DIR;
+use crate::claim::{ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
 use crate::{AppState, ConvertJob, TokenBucket};
 use axum::body::Body;
 use axum::extract::{Extension, Path as AxumPath, Query};
@@ -10,30 +11,32 @@ use mime_guess::from_path;
 use opendal::Operator;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
+use std::future::Future;
 use std::io::Error as IoError;
 use std::path::PathBuf;
-use std::sync::Arc;
+
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncSeekExt;
-use tokio::sync::Mutex as TokioMutex;
+
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, warn};
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct UploadResponse {
-    pub(crate) job_id: String,
-    pub(crate) message: String,
+pub struct UploadResponse {
+    pub job_id: String,
+    pub message: String,
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct WaitlistResponse {
-    pub(crate) pending_convert_jobs: usize,
-    pub(crate) pending_upload_jobs: usize,
-    pub(crate) total_pending_jobs: usize,
+pub struct WaitlistResponse {
+    pub pending_convert_jobs: usize,
+    pub pending_upload_jobs: usize,
+    pub total_pending_jobs: usize,
 }
 
 #[axum::debug_handler]
-pub(crate) async fn waitlist(Extension(state): Extension<AppState>) -> impl IntoResponse {
+pub async fn waitlist(Extension(state): Extension<AppState>) -> impl IntoResponse {
     let convert_jobs = state.job_set.lock().await.len();
     let upload_jobs = state.upload_job_set.lock().await.len();
 
@@ -47,7 +50,7 @@ pub(crate) async fn waitlist(Extension(state): Extension<AppState>) -> impl Into
     )
 }
 
-pub(crate) async fn upload_mp4_raw(
+pub async fn upload_mp4_raw(
     Extension(state): Extension<AppState>,
     Query(job): Query<ConvertJob>,
     body: Body,
@@ -137,7 +140,7 @@ async fn try_serve_from_filesystem(
     path: PathBuf,
     start: u64,
     end: u64,
-    token_rate: f64,
+    bucket: TokenBucket,
 ) -> Result<impl futures::Stream<Item = Result<Bytes, IoError>> + Send, String> {
     let mut fh = tokio::fs::File::open(&path)
         .await
@@ -148,8 +151,6 @@ async fn try_serve_from_filesystem(
         .map_err(|e| e.to_string())?;
     let len = end - start + 1;
 
-    let bucket = Arc::new(TokioMutex::new(TokenBucket::new(token_rate, token_rate)));
-
     use tokio::io::AsyncReadExt as _;
     let stream = ReaderStream::new(fh.take(len))
         .map_err(|e| IoError::new(e.kind(), e.to_string()))
@@ -158,7 +159,7 @@ async fn try_serve_from_filesystem(
             async move {
                 match res {
                     Ok(chunk) => {
-                        bucket.lock().await.consume(chunk.len()).await;
+                        bucket.consume(chunk.len()).await;
                         Ok::<Bytes, IoError>(chunk)
                     }
                     Err(e) => Err(e),
@@ -174,7 +175,7 @@ async fn try_serve_from_s3(
     start: u64,
     end: u64,
     operator: Operator,
-    token_rate: f64,
+    bucket: TokenBucket,
 ) -> Result<impl futures::Stream<Item = Result<Bytes, IoError>> + Send, String> {
     debug!(%s3_key, "Attempting to fetch from S3");
 
@@ -184,8 +185,6 @@ async fn try_serve_from_s3(
         .range(start..=end)
         .await
         .map_err(|e| e.to_string())?;
-
-    let bucket = Arc::new(TokioMutex::new(TokenBucket::new(token_rate, token_rate)));
 
     // Create a stream from the data
     let chunks: Vec<Bytes> = data
@@ -197,7 +196,7 @@ async fn try_serve_from_s3(
     let stream = futures::stream::iter(chunks).then(move |chunk| {
         let bucket = bucket.clone();
         async move {
-            bucket.lock().await.consume(chunk.len()).await;
+            bucket.consume(chunk.len()).await;
             Ok::<Bytes, IoError>(chunk)
         }
     });
@@ -205,8 +204,9 @@ async fn try_serve_from_s3(
     Ok(stream)
 }
 
-pub(crate) async fn serve_video(
+pub async fn serve_video(
     Extension(state): Extension<AppState>,
+    Extension(bucket): Extension<TokenBucket>,
     AxumPath(filename): AxumPath<String>,
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
@@ -215,10 +215,7 @@ pub(crate) async fn serve_video(
     let len = vals.len();
     if !(2..=3).contains(&len) {
         warn!(%filename, "Invalid filename");
-        return Ok(Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .body(Body::from("Invalid filename"))
-            .unwrap());
+        return Ok(err_response(StatusCode::BAD_REQUEST, "Invalid filename"));
     }
 
     let mut job_id = vals[0];
@@ -229,10 +226,10 @@ pub(crate) async fn serve_video(
 
     // First, try to get file size from local filesystem
     let local_path = state.videos_dir().join(job_id).join(&filename);
-    let s3_key = format!("videos/{}", filename);
+    let s3_key = format!("videos/{filename}");
     debug!(%job_id, %filename, ?local_path, ?s3_key, "Request server file");
 
-    server_file(state, local_path, s3_key, filename, req).await
+    server_file_with_bucket(state, local_path, s3_key, filename, req, bucket).await
 }
 
 fn parse_range(req: &Request<Body>, file_size: u64) -> (StatusCode, u64, u64) {
@@ -253,13 +250,13 @@ fn parse_range(req: &Request<Body>, file_size: u64) -> (StatusCode, u64, u64) {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct UploadFilesRequest {
+pub struct UploadFilesRequest {
     id: String,
     name: String,
 }
 
 #[axum::debug_handler]
-pub(crate) async fn upload_files(
+pub async fn upload_files(
     Extension(state): Extension<AppState>,
     Query(UploadFilesRequest { id: job_id, name }): Query<UploadFilesRequest>,
     body: Body,
@@ -349,8 +346,9 @@ pub(crate) async fn upload_files(
     )
 }
 
-pub(crate) fn serve_video_object(
+pub fn serve_video_object(
     Extension(state): Extension<AppState>,
+    Extension(bucket): Extension<TokenBucket>,
     AxumPath((job_id, filename)): AxumPath<(String, String)>,
     req: Request<Body>,
 ) -> impl Future<Output = Result<Response<Body>, Infallible>> {
@@ -360,18 +358,19 @@ pub(crate) fn serve_video_object(
         .join(&job_id)
         .join(VIDEO_OBJECTS_DIR)
         .join(&filename);
-    let s3_key = format!("videos/{}/{}/{}", job_id, VIDEO_OBJECTS_DIR, filename);
+    let s3_key = format!("videos/{job_id}/{VIDEO_OBJECTS_DIR}/{filename}");
     debug!(%job_id, %filename, ?local_path, ?s3_key, "Request server video object file");
 
-    server_file(state, local_path, s3_key, filename, req)
+    server_file_with_bucket(state, local_path, s3_key, filename, req, bucket)
 }
 
-async fn server_file(
+async fn server_file_with_bucket(
     state: AppState,
     local_path: PathBuf,
     s3_key: String,
     filename: String,
     req: Request<Body>,
+    bucket: TokenBucket,
 ) -> Result<Response<Body>, Infallible> {
     let maybe_filesize = if let Ok(metadata) = tokio::fs::metadata(&local_path).await {
         Some((metadata.len(), false))
@@ -398,7 +397,7 @@ async fn server_file(
     let maybe_res = if read_from_s3 {
         let operator = state.storage_manager.operator().clone();
 
-        try_serve_from_s3(s3_key, start, end, operator, state.token_rate)
+        try_serve_from_s3(s3_key, start, end, operator, bucket.clone())
             .await
             .map(|stream| {
                 debug!(%filename, "Serving video object from S3");
@@ -408,7 +407,7 @@ async fn server_file(
                 error!(%filename, ?error, "Failed to serve video object from S3");
             })
     } else {
-        try_serve_from_filesystem(local_path.clone(), start, end, state.token_rate)
+        try_serve_from_filesystem(local_path.clone(), start, end, bucket.clone())
             .await
             .map(|stream| {
                 debug!(%filename, "Serving video object from filesystem");
@@ -447,9 +446,71 @@ async fn server_file(
     Ok(res)
 }
 
+/// Create a new claim token for video access
+pub async fn create_claim(
+    Extension(state): Extension<AppState>,
+    Json(request): Json<CreateClaimRequest>,
+) -> impl IntoResponse {
+    // Validate request
+    if request.asset_id.is_empty() {
+        warn!("asset_id is empty");
+        return err_response(StatusCode::BAD_REQUEST, "asset_id is required");
+    }
+
+    // Set nbf to current time if not specified
+    let nbf_unix = request.nbf_unix.unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32
+    });
+
+    // Validate exp > nbf
+    if request.exp_unix <= nbf_unix {
+        warn!("exp_unix must be greater than nbf_unix");
+        return err_response(
+            StatusCode::BAD_REQUEST,
+            "exp_unix must be greater than nbf_unix",
+        );
+    }
+
+    let payload = ClaimPayloadV1 {
+        exp_unix: request.exp_unix,
+        nbf_unix,
+        asset_id: request.asset_id,
+        window_len_sec: request.window_len_sec,
+        max_kbps: request.max_kbps,
+        max_concurrency: request.max_concurrency,
+        allowed_widths: request.allowed_widths,
+    };
+
+    // Sign the claim
+    match state.claim_manager.sign_claim(&payload).await {
+        Ok(token) => {
+            debug!(
+                asset_id = %payload.asset_id,
+                window_sec = payload.window_len_sec,
+                max_kbps = payload.max_kbps,
+                max_concurrency = payload.max_concurrency,
+                allowed_widths = ?payload.allowed_widths,
+                "Claim created successfully"
+            );
+            (StatusCode::OK, Json(CreateClaimResponse { token })).into_response()
+        }
+        Err(err) => {
+            error!("Failed to create claim: {err}");
+            err_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create claim")
+        }
+    }
+}
+
 fn file_not_found() -> Response<Body> {
+    err_response(StatusCode::NOT_FOUND, "File not found")
+}
+
+pub(crate) fn err_response(status: StatusCode, body_str: &'static str) -> Response<Body> {
     Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("File not found"))
+        .status(status)
+        .body(Body::from(body_str))
         .unwrap()
 }

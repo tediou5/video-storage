@@ -7,13 +7,15 @@ Usage: video-storage [OPTIONS]
 
 Options:
   -l, --listen-on-port <LISTEN_ON_PORT>
-          [default: 32145]
+          Port to external API listen on [default: 32145]
+      --internal-addr <INTERNAL_ADDR>
+          Internal API IP address to bind to [default: 127.0.0.1:32146]
   -p, --permits <PERMITS>
-          [default: 5]
+          Number of concurrent conversion jobs [default: 5]
   -t, --token-rate <TOKEN_RATE>
-          [default: 0]
+          Token bucket rate limiting (0.0 = disabled) [default: 0]
   -w, --workspace <WORKSPACE>
-          [default: .]
+          Working directory for file storage [default: .]
   -c, --config <CONFIG>
           Configuration file path (overrides all other arguments)
   -s, --storage-backend <STORAGE_BACKEND>
@@ -62,6 +64,7 @@ Example config.toml:
 ```toml
 # Server configuration
 listen_on_port = 32145
+internal_addr = "127.0.0.1:32146"
 permits = 5
 token_rate = 0.0
 workspace = "./data"
@@ -144,3 +147,54 @@ curl -X POST 'http://127.0.0.1:32145/upload-objects?id=12345&name=test-file.tedi
 ```shell
 curl --fail -X GET http://127.0.0.1:32145/objects/12345/test-file.tediou5 -o downloaded-test-file.tediou5
 ```
+
+## Authentication and Authorization
+
+The service supports claim-based authentication for protected resources. Claims can restrict access based on:
+
+- Asset ID
+- Time window (nbf and exp timestamps)
+- Playback window length (for HLS segments)
+- Maximum bandwidth (kbps)
+- Maximum concurrency
+- Allowed video widths/resolutions
+
+### Creating a claim
+
+```shell
+curl -X POST http://127.0.0.1:32145/claims \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "video123",
+    "exp_unix": 1735689600,
+    "nbf_unix": 1735603200,
+    "window_len_sec": 300,
+    "max_kbps": 4000,
+    "max_concurrency": 10,
+    "allowed_widths": [1920, 1280, 854]
+  }'
+```
+
+Parameters:
+- `asset_id`: The ID of the video asset to grant access to
+- `exp_unix`: Expiration timestamp (Unix time)
+- `nbf_unix`: Not-before timestamp (Unix time, optional)
+- `window_len_sec`: Playback window duration in seconds
+- `max_kbps`: Maximum bandwidth limit in kilobits per second
+- `max_concurrency`: Maximum concurrent connections
+- `allowed_widths`: Array of allowed video widths (resolutions). Empty array means all widths are allowed.
+
+### Using a claim
+
+Include the claim token in the Authorization header:
+
+```shell
+curl -X GET http://127.0.0.1:32145/videos/1920/video123.m3u8 \
+  -H "Authorization: Bearer YOUR_CLAIM_TOKEN"
+```
+
+The service will validate:
+1. The token is valid and not expired
+2. The requested asset matches the claim's asset_id
+3. The requested width (1920 in this example) is in the allowed_widths list
+4. The request is within bandwidth and concurrency limits

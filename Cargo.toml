@@ -37,3 +37,12 @@ reqwest = { version = "0.12", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2.5.0"
 opendal = { version = "0.54", features = ["services-s3", "services-fs", "layers-mime-guess"] }
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
+thiserror = "1.0"
+
+[dev-dependencies]
+tower = "0.5"
+portpicker = "0.1"
+uuid = { version = "1.10", features = ["v4"] }

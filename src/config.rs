@@ -10,6 +10,7 @@ use std::path::Path;
 ///
 /// # Server configuration
 /// listen_on_port = 32145
+/// internal_addr = "127.0.0.1:32146"
 /// permits = 5
 /// token_rate = 0.0
 /// workspace = "./data"
@@ -30,10 +31,15 @@ use std::path::Path;
 #[command(version, about, long_about = None)]
 #[serde(default)]
 pub struct Config {
-    /// Port to listen on
+    /// Port to external API listen on
     #[arg(short, long, default_value_t = 32145)]
     #[serde(default = "default_port")]
     pub listen_on_port: u16,
+
+    /// Internal API IP address to bind to
+    #[arg(long, default_value = "127.0.0.1:32146")]
+    #[serde(default = "default_internal_addr")]
+    pub internal_addr: String,
 
     /// Number of concurrent conversion jobs
     #[arg(short, long, default_value_t = 5)]
@@ -95,6 +101,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             listen_on_port: default_port(),
+            internal_addr: default_internal_addr(),
             permits: default_permits(),
             token_rate: default_token_rate(),
             workspace: default_workspace(),
@@ -140,6 +147,9 @@ impl Config {
         // If CLI value is default, use file value
         if self.listen_on_port == default_port() {
             self.listen_on_port = file_config.listen_on_port;
+        }
+        if self.internal_addr == default_internal_addr() {
+            self.internal_addr = file_config.internal_addr;
         }
         if self.permits == default_permits() {
             self.permits = file_config.permits;
@@ -284,4 +294,8 @@ fn default_workspace() -> String {
 
 fn default_storage_backend() -> String {
     "local".to_string()
+}
+
+fn default_internal_addr() -> String {
+    "127.0.0.1:32146".to_string()
 }

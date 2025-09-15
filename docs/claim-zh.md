@@ -53,20 +53,20 @@ struct PayloadV1 {
   window_len_sec: u16,
   max_kbps: u16,
   max_concurrency: u8,
+  allowed_widths: Vec<u16>,
 }
 ```
 
-| 字段名              |    类型    | 长度   | 说明                    |
-| ------------------ | --------: | -----: | ---------------------- |
-| `exp_unix`         | `u32`     |      4 | 过期时间(Unix秒)         |
-| `nbf_unix`         | `u32`     |      4 | 生效时间(Unix秒)         |
-| `id_len`           | `u8`      |      1 | 资源ID的二进制长度        |
-| `asset_id`         | `Vec<u8>` |    可变 | 资源ID                  |
-| `window_len_sec`   | `u16`     |      2 | 可访问时长(秒, u16 足够)  |
-| `max_kbps`         | `u16`     |      2 | 聚合带宽上限, 0=不限      |
-| `max_concurrency`  | `u8`      |      1 | 并发上限, 0=不限, 暂不处理 |
-
-u8
+| 字段名              |    类型     | 长度   | 说明                    |
+| ------------------ | ---------: | -----: | ---------------------- |
+| `exp_unix`         | `u32`      |      4 | 过期时间(Unix秒)         |
+| `nbf_unix`         | `u32`      |      4 | 生效时间(Unix秒)         |
+| `id_len`           | `u8`       |      1 | 资源ID的二进制长度        |
+| `asset_id`         | `Vec<u8>`  |    可变 | 资源ID                  |
+| `window_len_sec`   | `u16`      |      2 | 可访问时长(秒, u16 足够)  |
+| `max_kbps`         | `u16`      |      2 | 聚合带宽上限, 0=不限      |
+| `max_concurrency`  | `u8`       |      1 | 并发上限, 0=不限, 暂不处理 |
+| `allowed_widths`   | `Vec<u16>` |    可变 | 授权的清晰度, 为空不限制   |
 
 ### 2.3 AEAD 鉴别标签
 
@@ -91,7 +91,8 @@ u8
   "exp_unix": 1750000600,
   "window_len_sec": 180,
   "max_concurrency": 0,
-  "max_kbps": 4000
+  "max_kbps": 4000,
+  "allowed_widths": [540, 720]
 }
 ```
 
