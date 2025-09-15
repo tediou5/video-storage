@@ -1,5 +1,11 @@
 # video storage
 
+## Requirements
+
+- Rust nightly (required for unstable features and edition 2024)
+- FFmpeg development libraries
+- See [Development Guide](docs/development.md) for detailed setup instructions
+
 ## Development
 
 For development setup and build instructions, see [Development Guide](docs/development.md).
@@ -43,6 +49,13 @@ Options:
 ```
 
 ## Examples
+
+### Building from source
+
+```shell
+# The project uses rust-toolchain.toml to automatically select nightly
+cargo build --release
+```
 
 ### Using command line arguments
 

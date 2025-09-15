@@ -75,10 +75,19 @@ sudo dnf install -y \
 
 ### Rust
 
+This project requires **Rust nightly** due to the use of unstable features and edition 2024.
+
 Install Rust through [rustup](https://rustup.rs/):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+The project includes a `rust-toolchain.toml` file that will automatically use the correct nightly version. If you need to manually set it:
+
+```bash
+rustup install nightly
+rustup default nightly
 ```
 
 ### Additional Tools
@@ -97,6 +106,8 @@ rustup component add clippy
 ```
 
 ## Building the Project
+
+**Note**: The project uses Rust nightly features. The `rust-toolchain.toml` file will automatically select the correct version.
 
 ```bash
 # Debug build
