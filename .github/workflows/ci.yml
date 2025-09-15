@@ -42,7 +42,15 @@ jobs:
                     libavdevice-dev \
                     clang \
                     pkg-config \
-                    nasm
+                    nasm \
+                    libopus-dev \
+                    libvpx-dev \
+                    libx264-dev \
+                    libx265-dev \
+                    libvorbis-dev \
+                    libmp3lame-dev \
+                    libfdk-aac-dev \
+                    libass-dev
 
             - name: Install cargo-nextest
               uses: taiki-e/install-action@v2
@@ -115,7 +123,15 @@ jobs:
                     libavdevice-dev \
                     clang \
                     pkg-config \
-                    nasm
+                    nasm \
+                    libopus-dev \
+                    libvpx-dev \
+                    libx264-dev \
+                    libx265-dev \
+                    libvorbis-dev \
+                    libmp3lame-dev \
+                    libfdk-aac-dev \
+                    libass-dev
 
             - name: Download build artifacts
               uses: actions/download-artifact@v4
@@ -163,7 +179,15 @@ jobs:
                     libavdevice-dev \
                     clang \
                     pkg-config \
-                    nasm
+                    nasm \
+                    libopus-dev \
+                    libvpx-dev \
+                    libx264-dev \
+                    libx265-dev \
+                    libvorbis-dev \
+                    libmp3lame-dev \
+                    libfdk-aac-dev \
+                    libass-dev
 
             - name: Install cargo-nextest
               if: matrix.test-type == 'nextest'
@@ -214,7 +238,9 @@ jobs:
                     libswscale-dev \
                     libavfilter-dev \
                     libavdevice-dev \
-                    nasm
+                    nasm \
+                    libopus-dev \
+                    libvpx-dev
 
             - name: Download build artifacts
               uses: actions/download-artifact@v4

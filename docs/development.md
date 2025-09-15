@@ -6,7 +6,9 @@ This guide covers setting up your development environment for the video-storage 
 
 ### System Dependencies
 
-The project requires FFmpeg development libraries and build tools. Install them based on your operating system:
+The project requires FFmpeg development libraries and build tools. Install them based on your operating system.
+
+For detailed information about FFmpeg dependencies and troubleshooting, see [FFmpeg Dependencies Guide](ffmpeg-dependencies.md).
 
 #### Ubuntu/Debian
 
@@ -21,13 +23,36 @@ sudo apt-get install -y \
     libavdevice-dev \
     clang \
     pkg-config \
-    nasm
+    nasm \
+    libopus-dev \
+    libvpx-dev \
+    libx264-dev \
+    libx265-dev \
+    libvorbis-dev \
+    libmp3lame-dev \
+    libfdk-aac-dev \
+    libass-dev
 ```
+
+**Note**: These codec libraries are essential for FFmpeg to support various video and audio formats:
+- `libopus-dev`: Opus audio codec
+- `libvpx-dev`: VP8/VP9 video codec (WebM)
+- `libx264-dev`: H.264 video codec
+- `libx265-dev`: H.265/HEVC video codec
+- `libvorbis-dev`: Vorbis audio codec
+- `libmp3lame-dev`: MP3 audio codec
+- `libfdk-aac-dev`: AAC audio codec
+- `libass-dev`: Subtitle rendering
 
 #### macOS
 
 ```bash
 brew install ffmpeg pkg-config nasm
+```
+
+**Note**: Homebrew's ffmpeg formula typically includes most codecs by default. If you need specific codecs, you can install ffmpeg with options:
+```bash
+brew install ffmpeg --with-libvpx --with-opus --with-fdk-aac
 ```
 
 #### Fedora/RHEL/CentOS
@@ -37,7 +62,15 @@ sudo dnf install -y \
     ffmpeg-devel \
     clang \
     pkg-config \
-    nasm
+    nasm \
+    opus-devel \
+    libvpx-devel \
+    x264-devel \
+    x265-devel \
+    libvorbis-devel \
+    lame-devel \
+    fdk-aac-devel \
+    libass-devel
 ```
 
 ### Rust
@@ -128,6 +161,16 @@ sudo apt-get install nasm
 
 # macOS
 brew install nasm
+```
+
+If you see errors like "opus not found using pkg-config" or similar codec-related errors, ensure all codec libraries are installed:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install libopus-dev libvpx-dev libx264-dev libx265-dev
+
+# Fedora/RHEL
+sudo dnf install opus-devel libvpx-devel x264-devel x265-devel
 ```
 
 ### Linking Errors
