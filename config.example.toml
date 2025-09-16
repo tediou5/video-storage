@@ -32,32 +32,6 @@ storage_backend = "local"         # Storage backend: "local" or "s3"
 # 2 = "uBhfVeH0b7KQKfwOJqhwzLXKBpg7xLPBe5HjCksDDWg="
 
 # ============================================================================
-# Claim Creation Examples:
-# ============================================================================
-# Minimal claim (only required fields, no restrictions):
-# curl -X POST http://localhost:32146/claims \
-#   -H "Content-Type: application/json" \
-#   -d '{"asset_id": "video123", "exp_unix": 1234567900}'
-#
-# Claim with bandwidth limit only:
-# curl -X POST http://localhost:32146/claims \
-#   -H "Content-Type: application/json" \
-#   -d '{"asset_id": "video123", "exp_unix": 1234567900, "max_kbps": 5000}'
-#
-# Full claim with all restrictions:
-# curl -X POST http://localhost:32146/claims \
-#   -H "Content-Type: application/json" \
-#   -d '{
-#     "asset_id": "video123",
-#     "exp_unix": 1234567900,
-#     "nbf_unix": 1234567000,
-#     "window_len_sec": 300,
-#     "max_kbps": 5000,
-#     "max_concurrency": 10,
-#     "allowed_widths": [1920, 1280, 854]
-#   }'
-
-# ============================================================================
 # Example configurations for different scenarios:
 # ============================================================================
 
