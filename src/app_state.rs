@@ -5,7 +5,8 @@ use crate::{ConvertJob, JobGenerator, StreamMap, UploadJob};
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde_json::json;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::io::ErrorKind as StdIoErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex as TokioMutex, Semaphore};
@@ -87,12 +88,16 @@ impl AppState {
         workspace: &Path,
         storage_manager: StorageManager,
         webhook_url: Option<String>,
+        claim_keys: Option<HashMap<u8, [u8; 32]>>,
     ) -> std::io::Result<Self> {
         init_workspace(workspace).await?;
         let (tx, rx) = unbounded();
 
         // Initialize claim managers
-        let claim_manager = Arc::new(ClaimManager::new());
+        let claim_manager = Arc::new(
+            ClaimManager::from_config(claim_keys)
+                .map_err(|error| std::io::Error::new(StdIoErrorKind::InvalidInput, error))?,
+        );
         let claim_bucket_manager = Arc::new(ClaimBucketManager::new(token_rate));
 
         let this = Self {

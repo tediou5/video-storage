@@ -42,6 +42,8 @@ Options:
           S3 secret access key
       --webhook-url <WEBHOOK_URL>
           Webhook URL to call when jobs complete
+      --claim-key <CLAIM_KEYS>
+          Claim signing keys configuration (kid -> base64 encoded 32-byte key). Can be specified multiple times as --claim-key 1:base64key. You can generate a key with: openssl rand -base64 32
   -h, --help
           Print help
   -V, --version
@@ -92,6 +94,14 @@ internal_addr = "127.0.0.1:32146"
 permits = 5
 token_rate = 0.0
 workspace = "./data"
+
+# Claim signing keys configuration (optional)
+# If not specified, keys will be randomly generated on startup
+# Format: kid = "base64_encoded_32_byte_key"
+# You can generate a key with: openssl rand -base64 32
+# [claim_keys]
+# 1 = "IaNHoHtWetGMPkHj6Iy8MZe5L3KlH8F6j6nRvJpYQYU="
+# 2 = "uBhfVeH0b7KQKfwOJqhwzLXKBpg7xLPBe5HjCksDDWg="
 
 # Storage configuration
 storage_backend = "s3"  # Options: "local" or "s3"

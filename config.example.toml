@@ -2,14 +2,14 @@
 # Copy this file to config.toml and modify as needed
 
 # Server configuration
-listen_on_port = 32145          # Port to listen on
+listen_on_port = 32145            # Port to listen on
 internal_addr = "127.0.0.1:32146" # Internal API address to bind to
-permits = 5                      # Number of concurrent conversion jobs
-token_rate = 0.0                 # Token bucket rate limiting (0.0 = disabled)
-workspace = "./data"             # Working directory for file storage
+permits = 5                       # Number of concurrent conversion jobs
+token_rate = 0.0                  # Token bucket rate limiting (0.0 = disabled)
+workspace = "./data"              # Working directory for file storage
 
 # Storage backend configuration
-storage_backend = "local"        # Storage backend: "local" or "s3"
+storage_backend = "local"         # Storage backend: "local" or "s3"
 
 # S3 configuration (only required when storage_backend = "s3")
 # Uncomment and configure the following lines for S3/MinIO storage
@@ -22,6 +22,14 @@ storage_backend = "local"        # Storage backend: "local" or "s3"
 # Webhook configuration (optional)
 # Uncomment to enable webhook notifications when jobs complete
 # webhook_url = "https://example.com/webhook"  # Webhook endpoint URL
+
+# Claim signing keys configuration (optional)
+# If not specified, keys will be randomly generated on startup
+# Format: kid = "base64_encoded_32_byte_key"
+# You can generate a key with: openssl rand -base64 32
+# [claim_keys]
+# 1 = "IaNHoHtWetGMPkHj6Iy8MZe5L3KlH8F6j6nRvJpYQYU="
+# 2 = "uBhfVeH0b7KQKfwOJqhwzLXKBpg7xLPBe5HjCksDDWg="
 
 # ============================================================================
 # Example configurations for different scenarios:
@@ -80,6 +88,8 @@ storage_backend = "local"        # Storage backend: "local" or "s3"
 # s3_access_key_id = "AKIAIOSFODNN7EXAMPLE"
 # s3_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 # webhook_url = "https://api.example.com/video-webhook"
+# [claim_keys]
+# 1 = "IaNHoHtWetGMPkHj6Iy8MZe5L3KlH8F6j6nRvJpYQYU="
 
 # === Environment Variables ===
 # You can also use environment variables for sensitive data:

@@ -1,10 +1,10 @@
-use aes_gcm::{
-    Aes256Gcm, Key, Nonce,
-    aead::{Aead, KeyInit},
-};
+use aes_gcm::Aes256Gcm;
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Key, Nonce};
 use anyhow::{Result, anyhow};
 use axum::http::StatusCode;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -162,13 +162,14 @@ impl ClaimHeader {
 }
 
 /// Claim manager for key management and token operations
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ClaimManager {
     keys: Arc<RwLock<HashMap<u8, [u8; 32]>>>,
     current_kid: Arc<AtomicU8>,
 }
 
 impl ClaimManager {
+    /// Create a new ClaimManager with randomly generated keys
     pub fn new() -> Self {
         let mut keys = HashMap::new();
 
@@ -182,6 +183,25 @@ impl ClaimManager {
             keys: Arc::new(RwLock::new(keys)),
             current_kid: Arc::new(AtomicU8::new(1)),
         }
+    }
+
+    /// Create a ClaimManager from configuration
+    /// If config_keys is provided, use them; otherwise generate random keys
+    pub fn from_config(config_keys: Option<HashMap<u8, [u8; 32]>>) -> Result<Self> {
+        let Some(keys) = config_keys else {
+            return Ok(Self::new());
+        };
+
+        if keys.is_empty() {
+            return Ok(Self::new());
+        }
+
+        let first_kid = keys.keys().min().copied().expect("Must has key");
+
+        Ok(Self {
+            keys: Arc::new(RwLock::new(keys)),
+            current_kid: Arc::new(AtomicU8::new(first_kid)),
+        })
     }
 
     /// Create a new claim manager with a specific key (for testing or key rotation)
@@ -650,5 +670,100 @@ mod tests {
         // Test segment window
         let result = validate_claim_time_and_resource(&claim, "video123", Some(50), None);
         assert!(result.is_err()); // 50 * 4 = 200 seconds > 120 seconds window
+    }
+
+    #[tokio::test]
+    async fn test_claim_manager_from_config_with_keys() {
+        let mut config_keys = std::collections::HashMap::new();
+        config_keys.insert(1, [1u8; 32]);
+        config_keys.insert(3, [2u8; 32]);
+
+        // Create manager with configured keys
+        let manager = ClaimManager::from_config(Some(config_keys)).unwrap();
+
+        // Test signing and verification
+        let payload = ClaimPayloadV1 {
+            exp_unix: 2000000000,
+            nbf_unix: 1700000000,
+            asset_id: "test_config".to_string(),
+            window_len_sec: 300,
+            max_kbps: 5000,
+            max_concurrency: 10,
+            allowed_widths: vec![1920],
+        };
+
+        let token = manager.sign_claim(&payload).await.unwrap();
+        let verified = manager.verify_claim(&token).await.unwrap();
+
+        assert_eq!(verified.asset_id, payload.asset_id);
+        assert_eq!(verified.exp_unix, payload.exp_unix);
+    }
+
+    #[tokio::test]
+    async fn test_claim_manager_from_config_without_keys() {
+        // Test fallback to random generation
+        let manager = ClaimManager::from_config(None).unwrap();
+
+        let payload = ClaimPayloadV1 {
+            exp_unix: 2000000000,
+            nbf_unix: 1700000000,
+            asset_id: "test_random".to_string(),
+            window_len_sec: 100,
+            max_kbps: 3000,
+            max_concurrency: 5,
+            allowed_widths: vec![],
+        };
+
+        let token = manager.sign_claim(&payload).await.unwrap();
+        let verified = manager.verify_claim(&token).await.unwrap();
+
+        assert_eq!(verified.asset_id, payload.asset_id);
+    }
+
+    #[tokio::test]
+    async fn test_claim_manager_from_config_empty_keys() {
+        let config_keys = std::collections::HashMap::new();
+
+        let result = ClaimManager::from_config(Some(config_keys));
+        assert!(result.is_ok());
+        let key = result.unwrap();
+        assert!(key.keys.read().await.len() == 1);
+    }
+
+    #[tokio::test]
+    async fn test_claim_manager_key_rotation() {
+        let mut config_keys = std::collections::HashMap::new();
+
+        config_keys.insert(1, [1u8; 32]);
+        config_keys.insert(2, [2u8; 32]);
+
+        let manager = ClaimManager::from_config(Some(config_keys)).unwrap();
+
+        // Sign with current key (should be kid=1)
+        let payload = ClaimPayloadV1 {
+            exp_unix: 2000000000,
+            nbf_unix: 1700000000,
+            asset_id: "test_rotation".to_string(),
+            window_len_sec: 60,
+            max_kbps: 2000,
+            max_concurrency: 3,
+            allowed_widths: vec![1280],
+        };
+
+        let token1 = manager.sign_claim(&payload).await.unwrap();
+
+        // Change current key to kid=2
+        manager.set_current_kid(2).await.unwrap();
+        let token2 = manager.sign_claim(&payload).await.unwrap();
+
+        // Both tokens should be verifiable
+        let verified1 = manager.verify_claim(&token1).await.unwrap();
+        let verified2 = manager.verify_claim(&token2).await.unwrap();
+
+        assert_eq!(verified1.asset_id, payload.asset_id);
+        assert_eq!(verified2.asset_id, payload.asset_id);
+
+        // Tokens should be different (different keys used)
+        assert_ne!(token1, token2);
     }
 }

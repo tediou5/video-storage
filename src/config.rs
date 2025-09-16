@@ -1,6 +1,11 @@
 use anyhow::Result;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use serde_with::base64::Base64;
+use serde_with::{DisplayFromStr, serde_as};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Main configuration structure that can be loaded from CLI, config file, or environment
@@ -27,9 +32,10 @@ use std::path::Path;
 ///
 /// # Webhook configuration (optional)
 /// webhook_url = "https://example.com/webhook"
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, Parser)]
-#[command(version, about, long_about = None)]
 #[serde(default)]
+#[command(version, about, long_about = None)]
 pub struct Config {
     /// Port to external API listen on
     #[arg(short, long, default_value_t = 32145)]
@@ -95,6 +101,45 @@ pub struct Config {
     #[arg(long)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webhook_url: Option<String>,
+
+    /// Claim signing keys configuration (kid -> base64 encoded 32-byte key).
+    /// Can be specified multiple times as --claim-key 1:base64key.
+    /// You can generate a key with: openssl rand -base64 32
+    #[arg(long = "claim-key", value_parser = parse_claim_key)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<HashMap<DisplayFromStr, Base64>>")]
+    pub claim_keys: Option<HashMap<u8, [u8; 32]>>,
+}
+
+/// Parse claim key from command line format "kid:base64_key"
+fn parse_claim_key(s: &str) -> Result<(u8, [u8; 32]), String> {
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err("Invalid format. Use kid:base64_key".to_string());
+    }
+
+    // Validate kid is a valid u8
+    let kid = parts[0];
+    let kid = kid
+        .parse::<u8>()
+        .map_err(|_| format!("Invalid kid '{kid}'. Must be a number between 0-255"))?;
+
+    let key_bytes = STANDARD
+        .decode(parts[1])
+        .map_err(|err| format!("Failed to decode base64 key for {kid}: {err}"))?;
+
+    // Validate key length
+    if key_bytes.len() != 32 {
+        return Err(format!(
+            "Invalid key length for kid {kid}: expected 32 bytes, got {}",
+            key_bytes.len()
+        ));
+    }
+
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&key_bytes);
+
+    Ok((kid, key))
 }
 
 impl Default for Config {
@@ -113,6 +158,7 @@ impl Default for Config {
             s3_access_key_id: None,
             s3_secret_access_key: None,
             webhook_url: None,
+            claim_keys: None,
         }
     }
 }
@@ -182,6 +228,9 @@ impl Config {
         }
         if self.webhook_url.is_none() {
             self.webhook_url = file_config.webhook_url;
+        }
+        if self.claim_keys.is_none() {
+            self.claim_keys = file_config.claim_keys;
         }
 
         self
@@ -263,6 +312,10 @@ impl Config {
             secret_access_key: self.s3_secret_access_key.clone()?,
         })
     }
+
+    pub fn claim_keys(&self) -> Option<HashMap<u8, [u8; 32]>> {
+        self.claim_keys.clone()
+    }
 }
 
 // S3 configuration subset
@@ -298,4 +351,110 @@ fn default_storage_backend() -> String {
 
 fn default_internal_addr() -> String {
     "127.0.0.1:32146".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_config_with_claim_keys_from_toml() {
+        let key1 = STANDARD.encode([3u8; 32]);
+
+        let toml_content = format!(
+            r#"
+            listen_on_port = 8080
+            internal_addr = "127.0.0.1:8081"
+            permits = 10
+            token_rate = 5.0
+            workspace = "/tmp/test"
+            storage_backend = "local"
+
+            [claim_keys]
+            1 = "{key1}"
+            2 = "uBhfVeH0b7KQKfwOJqhwzLXKBpg7xLPBe5HjCksDDWg="
+        "#
+        );
+
+        let config: Config = toml::from_str(&toml_content).unwrap();
+
+        assert_eq!(config.listen_on_port, 8080);
+        assert!(config.claim_keys.is_some());
+
+        let keys = config.claim_keys.unwrap();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains_key(&1));
+        assert!(keys.contains_key(&2));
+
+        assert_eq!(keys.get(&1).unwrap(), &[3u8; 32]);
+    }
+
+    #[test]
+    fn test_config_without_claim_keys() {
+        let toml_content = r#"
+            listen_on_port = 8080
+            internal_addr = "127.0.0.1:8081"
+            permits = 10
+            token_rate = 5.0
+            workspace = "/tmp/test"
+            storage_backend = "local"
+        "#;
+
+        let config: Config = toml::from_str(toml_content).unwrap();
+        assert!(config.claim_keys.is_none());
+    }
+
+    #[test]
+    fn test_parse_claim_key_valid() {
+        let key1 = STANDARD.encode([3u8; 32]);
+        let result = parse_claim_key(&format!("1:{key1}"));
+        assert!(result.is_ok());
+        let (kid, key) = result.unwrap();
+        assert_eq!(kid, 1);
+        assert_eq!(key, [3u8; 32]);
+    }
+
+    #[test]
+    fn test_parse_claim_key_invalid_format() {
+        let result = parse_claim_key("invalid_format");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid format"));
+    }
+
+    #[test]
+    fn test_parse_claim_key_invalid_kid() {
+        let result = parse_claim_key("256:IaNHoHtWetGMPkHj6Iy8MZe5L3KlH8F6j6nRvJpYQYU=");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid kid"));
+
+        let result = parse_claim_key("abc:IaNHoHtWetGMPkHj6Iy8MZe5L3KlH8F6j6nRvJpYQYU=");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid kid"));
+    }
+
+    #[test]
+    fn test_config_merge_with_claim_keys() {
+        let mut file_config = Config::default();
+        let mut claim_keys = HashMap::new();
+        claim_keys.insert(1, [1u8; 32]);
+        claim_keys.insert(2, [2u8; 32]);
+        file_config.claim_keys = Some(claim_keys.clone());
+
+        let cli_config = Config {
+            listen_on_port: 9000,
+            ..Default::default()
+        };
+
+        let merged = cli_config.merge_with_file(file_config);
+
+        assert_eq!(merged.listen_on_port, 9000); // CLI value takes precedence
+        assert_eq!(merged.claim_keys, Some(claim_keys)); // File value used when CLI is None
+    }
+
+    #[test]
+    fn test_config_default_has_no_claim_keys() {
+        let config = Config::default();
+        assert!(config.claim_keys.is_none());
+    }
 }
