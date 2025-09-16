@@ -1,5 +1,4 @@
-use crate::job::JobGenerator;
-use crate::{BANDWIDTHS, ConvertJob, RESOLUTIONS};
+use crate::{BANDWIDTHS, ConvertJob, JobGenerator, RESOLUTIONS};
 use ez_ffmpeg::Frame;
 use ez_ffmpeg::container_info::get_duration_us;
 use ez_ffmpeg::filter::frame_filter::FrameFilter;
@@ -12,7 +11,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 
-pub(crate) async fn spawn_hls_job(
+/// HLS segment duration in seconds
+pub const HLS_SEGMENT_DURATION: u16 = 4;
+
+pub async fn spawn_hls_job(
     JobGenerator { job, upload_path }: JobGenerator,
     videos_dir: &Path,
     temp_dir: &Path,
@@ -74,7 +76,7 @@ pub fn convert_with_scales(
                 .set_video_codec("libvpx-vp9")
                 // hls settings
                 .set_format("hls")
-                .set_format_opt("hls_time", "4")
+                .set_format_opt("hls_time", HLS_SEGMENT_DURATION.to_string())
                 .set_format_opt("hls_segment_type", "fmp4")
                 .set_format_opt("hls_playlist_type", "vod")
                 .set_format_opt("hls_fmp4_init_filename", format!("{job_id}-init.mp4"))
@@ -96,11 +98,7 @@ pub fn convert_with_scales(
     Ok(builder.outputs(outputs).build()?.start()?.wait()?)
 }
 
-pub(crate) fn create_master_playlist(
-    job: &ConvertJob,
-    input: &Path,
-    output: &Path,
-) -> anyhow::Result<()> {
+pub fn create_master_playlist(job: &ConvertJob, input: &Path, output: &Path) -> anyhow::Result<()> {
     let job_id = job.id();
 
     let input_str = input.to_str().unwrap();

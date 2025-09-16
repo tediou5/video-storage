@@ -1,4 +1,6 @@
-use crate::opendal::StorageManager;
+use crate::StorageManager;
+use crate::claim::ClaimManager;
+use crate::claim_bucket::ClaimBucketManager;
 use crate::{ConvertJob, JobGenerator, StreamMap, UploadJob};
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
@@ -14,7 +16,7 @@ const UPLOADS_DIR: &str = "uploads";
 const VIDEOS_DIR: &str = "videos";
 const JOB_FILE: &str = "pending-jobs.json";
 const UPLOAD_JOB_FILE: &str = "pending-uploads.json";
-pub(crate) const VIDEO_OBJECTS_DIR: &str = "video-objects";
+pub const VIDEO_OBJECTS_DIR: &str = "video-objects";
 
 async fn init_workspace(workspace: &Path) -> std::io::Result<()> {
     tokio::fs::create_dir_all(workspace.join(TEMP_DIR)).await?;
@@ -24,7 +26,7 @@ async fn init_workspace(workspace: &Path) -> std::io::Result<()> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum Job {
+pub enum Job {
     Convert(JobGenerator),
     Upload(UploadJob),
 }
@@ -62,23 +64,24 @@ impl From<UploadJob> for Job {
 }
 
 #[derive(Clone)]
-pub(crate) struct AppState {
-    pub(crate) token_rate: f64,
-    pub(crate) job_set: Arc<TokioMutex<BTreeSet<ConvertJob>>>,
-    pub(crate) upload_job_set: Arc<TokioMutex<BTreeSet<UploadJob>>>,
-    pub(crate) job_tx: UnboundedSender<Job>,
-    pub(crate) storage_manager: Arc<StorageManager>,
-    pub(crate) webhook_url: Option<String>,
+pub struct AppState {
+    pub job_set: Arc<TokioMutex<BTreeSet<ConvertJob>>>,
+    pub upload_job_set: Arc<TokioMutex<BTreeSet<UploadJob>>>,
+    pub job_tx: UnboundedSender<Job>,
+    pub storage_manager: Arc<StorageManager>,
+    pub webhook_url: Option<String>,
+    pub claim_manager: Arc<ClaimManager>,
+    pub claim_bucket_manager: Arc<ClaimBucketManager>,
 
-    temp_dir: PathBuf,
-    videos_dir: PathBuf,
-    uploads_dir: PathBuf,
-    pending_jobs_path: PathBuf,
-    pending_uploads_path: PathBuf,
+    pub temp_dir: PathBuf,
+    pub videos_dir: PathBuf,
+    pub uploads_dir: PathBuf,
+    pub pending_jobs_path: PathBuf,
+    pub pending_uploads_path: PathBuf,
 }
 
 impl AppState {
-    pub(crate) async fn new(
+    pub async fn new(
         token_rate: f64,
         permits: usize,
         workspace: &Path,
@@ -87,13 +90,19 @@ impl AppState {
     ) -> std::io::Result<Self> {
         init_workspace(workspace).await?;
         let (tx, rx) = unbounded();
+
+        // Initialize claim managers
+        let claim_manager = Arc::new(ClaimManager::new());
+        let claim_bucket_manager = Arc::new(ClaimBucketManager::new(token_rate));
+
         let this = Self {
-            token_rate,
             job_set: Arc::default(),
             upload_job_set: Arc::default(),
             job_tx: tx,
             storage_manager: Arc::new(storage_manager),
             webhook_url,
+            claim_manager,
+            claim_bucket_manager,
 
             temp_dir: workspace.join(TEMP_DIR),
             uploads_dir: workspace.join(UPLOADS_DIR),
@@ -106,23 +115,23 @@ impl AppState {
         Ok(this)
     }
 
-    pub(crate) fn temp_dir(&self) -> &Path {
+    pub fn temp_dir(&self) -> &Path {
         self.temp_dir.as_path()
     }
 
-    pub(crate) fn uploads_dir(&self) -> &Path {
+    pub fn uploads_dir(&self) -> &Path {
         self.uploads_dir.as_path()
     }
 
-    pub(crate) fn videos_dir(&self) -> &Path {
+    pub fn videos_dir(&self) -> &Path {
         self.videos_dir.as_path()
     }
 
-    pub(crate) fn pending_jobs_path(&self) -> &Path {
+    pub fn pending_jobs_path(&self) -> &Path {
         self.pending_jobs_path.as_path()
     }
 
-    pub(crate) fn pending_uploads_path(&self) -> &Path {
+    pub fn pending_uploads_path(&self) -> &Path {
         self.pending_uploads_path.as_path()
     }
 

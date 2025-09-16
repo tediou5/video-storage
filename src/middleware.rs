@@ -1,7 +1,7 @@
 use axum::{body::Body, http::Request, middleware::Next, response::Response};
 use tracing::{error, warn};
 
-pub(crate) async fn log_request_errors(req: Request<Body>, next: Next) -> Response {
+pub async fn log_request_errors(req: Request<Body>, next: Next) -> Response {
     let uri = req.uri().clone();
     let method = req.method().clone();
 
