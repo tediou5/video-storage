@@ -478,10 +478,10 @@ pub async fn create_claim(
         exp_unix: request.exp_unix,
         nbf_unix,
         asset_id: request.asset_id,
-        window_len_sec: request.window_len_sec,
-        max_kbps: request.max_kbps,
-        max_concurrency: request.max_concurrency,
-        allowed_widths: request.allowed_widths,
+        window_len_sec: request.window_len_sec.unwrap_or(0),
+        max_kbps: request.max_kbps.unwrap_or(0),
+        max_concurrency: request.max_concurrency.unwrap_or(0),
+        allowed_widths: request.allowed_widths.unwrap_or_default(),
     };
 
     // Sign the claim

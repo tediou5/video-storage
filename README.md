@@ -18,8 +18,8 @@ Usage: video-storage [OPTIONS]
 Options:
   -l, --listen-on-port <LISTEN_ON_PORT>
           Port to external API listen on [default: 32145]
-      --internal-addr <INTERNAL_ADDR>
-          Internal API IP address to bind to [default: 127.0.0.1:32146]
+      --internal-port <INTERNAL_PORT>
+          Internal API port to listen on [default: 32146]
   -p, --permits <PERMITS>
           Number of concurrent conversion jobs [default: 5]
   -t, --token-rate <TOKEN_RATE>
@@ -90,7 +90,7 @@ Example config.toml:
 ```toml
 # Server configuration
 listen_on_port = 32145
-internal_addr = "127.0.0.1:32146"
+internal_port = 32146
 permits = 5
 token_rate = 0.0
 workspace = "./data"
@@ -196,7 +196,16 @@ The service supports claim-based authentication for protected resources. Claims 
 ### Creating a claim
 
 ```shell
-curl -X POST http://127.0.0.1:32145/claims \
+# Minimal claim (all limits optional, defaults to no restrictions)
+curl -X POST http://127.0.0.1:32146/claims \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "video123",
+    "exp_unix": 1735689600
+  }'
+
+# Claim with optional restrictions
+curl -X POST http://127.0.0.1:32146/claims \
   -H "Content-Type: application/json" \
   -d '{
     "asset_id": "video123",
@@ -210,13 +219,13 @@ curl -X POST http://127.0.0.1:32145/claims \
 ```
 
 Parameters:
-- `asset_id`: The ID of the video asset to grant access to
-- `exp_unix`: Expiration timestamp (Unix time)
-- `nbf_unix`: Not-before timestamp (Unix time, optional)
-- `window_len_sec`: Playback window duration in seconds
-- `max_kbps`: Maximum bandwidth limit in kilobits per second
-- `max_concurrency`: Maximum concurrent connections
-- `allowed_widths`: Array of allowed video widths (resolutions). Empty array means all widths are allowed.
+- `asset_id`: The ID of the video asset to grant access to (required)
+- `exp_unix`: Expiration timestamp (Unix time) (required)
+- `nbf_unix`: Not-before timestamp (Unix time, optional, defaults to current time)
+- `window_len_sec`: Playback window duration in seconds (optional, 0 = no limit)
+- `max_kbps`: Maximum bandwidth limit in kilobits per second (optional, 0 = no limit)
+- `max_concurrency`: Maximum concurrent connections (optional, 0 = no limit)
+- `allowed_widths`: Array of allowed video widths (resolutions) (optional, empty = all widths allowed)
 
 ### Using a claim
 
