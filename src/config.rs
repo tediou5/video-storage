@@ -15,7 +15,7 @@ use std::path::Path;
 ///
 /// # Server configuration
 /// listen_on_port = 32145
-/// internal_addr = "127.0.0.1:32146"
+/// internal_port = 32146
 /// permits = 5
 /// token_rate = 0.0
 /// workspace = "./data"
@@ -42,10 +42,10 @@ pub struct Config {
     #[serde(default = "default_port")]
     pub listen_on_port: u16,
 
-    /// Internal API IP address to bind to
-    #[arg(long, default_value = "127.0.0.1:32146")]
-    #[serde(default = "default_internal_addr")]
-    pub internal_addr: String,
+    /// Internal API port to listen on
+    #[arg(long, default_value_t = 32146)]
+    #[serde(default = "default_internal_port")]
+    pub internal_port: u16,
 
     /// Number of concurrent conversion jobs
     #[arg(short, long, default_value_t = 5)]
@@ -146,7 +146,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             listen_on_port: default_port(),
-            internal_addr: default_internal_addr(),
+            internal_port: default_internal_port(),
             permits: default_permits(),
             token_rate: default_token_rate(),
             workspace: default_workspace(),
@@ -194,8 +194,8 @@ impl Config {
         if self.listen_on_port == default_port() {
             self.listen_on_port = file_config.listen_on_port;
         }
-        if self.internal_addr == default_internal_addr() {
-            self.internal_addr = file_config.internal_addr;
+        if self.internal_port == default_internal_port() {
+            self.internal_port = file_config.internal_port;
         }
         if self.permits == default_permits() {
             self.permits = file_config.permits;
@@ -349,8 +349,8 @@ fn default_storage_backend() -> String {
     "local".to_string()
 }
 
-fn default_internal_addr() -> String {
-    "127.0.0.1:32146".to_string()
+fn default_internal_port() -> u16 {
+    32146
 }
 
 #[cfg(test)]
@@ -365,7 +365,7 @@ mod tests {
         let toml_content = format!(
             r#"
             listen_on_port = 8080
-            internal_addr = "127.0.0.1:8081"
+            internal_port = 8081
             permits = 10
             token_rate = 5.0
             workspace = "/tmp/test"
@@ -394,7 +394,7 @@ mod tests {
     fn test_config_without_claim_keys() {
         let toml_content = r#"
             listen_on_port = 8080
-            internal_addr = "127.0.0.1:8081"
+            internal_port = 8081
             permits = 10
             token_rate = 5.0
             workspace = "/tmp/test"

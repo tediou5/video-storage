@@ -18,8 +18,8 @@ Usage: video-storage [OPTIONS]
 Options:
   -l, --listen-on-port <LISTEN_ON_PORT>
           Port to external API listen on [default: 32145]
-      --internal-addr <INTERNAL_ADDR>
-          Internal API IP address to bind to [default: 127.0.0.1:32146]
+      --internal-port <INTERNAL_PORT>
+          Internal API port to listen on [default: 32146]
   -p, --permits <PERMITS>
           Number of concurrent conversion jobs [default: 5]
   -t, --token-rate <TOKEN_RATE>
@@ -90,7 +90,7 @@ Example config.toml:
 ```toml
 # Server configuration
 listen_on_port = 32145
-internal_addr = "127.0.0.1:32146"
+internal_port = 32146
 permits = 5
 token_rate = 0.0
 workspace = "./data"

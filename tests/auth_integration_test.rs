@@ -42,7 +42,7 @@ impl TestServer {
 
         let config = Config {
             listen_on_port: e_port,
-            internal_addr: format!("127.0.0.1:{i_port}"),
+            internal_port: i_port,
             workspace: workspace.clone(),
             ..Default::default()
         };

@@ -53,7 +53,7 @@ pub const BANDWIDTHS: [u32; 3] = [2500000, 1500000, 1000000];
 pub async fn run(config: Config) {
     // Extract configuration values
     let listen_on_port = config.listen_on_port;
-    let internal_addr = config.internal_addr.clone();
+    let internal_port = config.internal_port;
     let permits = config.permits;
     let token_rate = config.token_rate;
     let workspace = config.workspace.clone();
@@ -187,6 +187,7 @@ pub async fn run(config: Config) {
         .expect("Failed to bind external API");
 
     // Start internal API server
+    let internal_addr = format!("0.0.0.0:{internal_port}");
     info!("Internal API listening on {internal_addr}");
     let internal_listener = TcpListener::bind(&internal_addr)
         .await
