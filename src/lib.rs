@@ -58,6 +58,7 @@ pub async fn run(config: Config) {
     let token_rate = config.token_rate;
     let workspace = config.workspace.clone();
     let webhook_url = config.webhook_url.clone();
+    let claim_keys = config.claim_keys.clone();
 
     // Parse workspace path
     let workspace_path = PathBuf::from_str(&workspace).expect("Failed to parse workspace dir");
@@ -104,6 +105,7 @@ pub async fn run(config: Config) {
         &workspace_path,
         storage_manager,
         webhook_url,
+        claim_keys,
     )
     .await
     .expect("Failed to create app state");
