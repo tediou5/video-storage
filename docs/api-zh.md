@@ -311,15 +311,15 @@ curl http://localhost:32146/waitlist
 
 ```bash
 # 获取 HLS 播放列表
-curl -H "X-Claim-Token: your_token_here" \
+curl -H "Authorization: Bearer your_token_here" \
   http://localhost:32145/videos/video123-1080.m3u8
 
 # 获取视频片段
-curl -H "X-Claim-Token: your_token_here" \
+curl -H "Authorization: Bearer your_token_here" \
   http://localhost:32145/videos/video123-1080-00001.ts
 
 # 使用范围请求
-curl -H "X-Claim-Token: your_token_here" \
+curl -H "Authorization: Bearer your_token_here" \
   -H "Range: bytes=0-1048575" \
   http://localhost:32145/videos/video123-1080-00001.ts
 ```
@@ -426,11 +426,11 @@ curl -X POST http://localhost:32146/claims \
 TOKEN="your_token_here"
 
 # 获取 HLS 主播放列表
-curl -H "X-Claim-Token: $TOKEN" \
+curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:32145/videos/myvideo-1080.m3u8 > playlist.m3u8
 
 # 获取视频片段
-curl -H "X-Claim-Token: $TOKEN" \
+curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:32145/videos/myvideo-1080-00001.ts > segment1.ts
 ```
 
