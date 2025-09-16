@@ -16,7 +16,7 @@ Video Storage 服务提供两组 API：
 
 创建用于访问视频的认证令牌。
 
-**接口地址**: `POST /claims`  
+**接口地址**: `POST /claims`
 **认证要求**: 无
 
 #### 请求参数 (JSON Body)
@@ -24,12 +24,12 @@ Video Storage 服务提供两组 API：
 | 参数 | 类型 | 必填 | 说明 | 限制 |
 |-----|------|-----|------|------|
 | asset_id | string | 是 | 资源ID，对应视频的 job_id | 不能为空 |
-| nbf_unix | u32 | 否 | 令牌生效时间（Unix时间戳） | 默认为当前时间 |
 | exp_unix | u32 | 是 | 令牌过期时间（Unix时间戳） | 必须大于 nbf_unix |
-| window_len_sec | u16 | 是 | 时间窗口长度（秒） | 0-65535 |
-| max_kbps | u16 | 是 | 最大传输速率（kbps） | 0-65535 |
-| max_concurrency | u16 | 是 | 最大并发连接数 | 0-65535 |
-| allowed_widths | Vec<u16> | 是 | 允许访问的视频宽度列表 | 数组，每个值 0-65535 |
+| nbf_unix | u32 | 否 | 令牌生效时间（Unix时间戳） | 默认为当前时间 |
+| window_len_sec | u16 | 否 | 时间窗口长度（秒） | 0-65535，默认为0（无限制） |
+| max_kbps | u16 | 否 | 最大传输速率（kbps） | 0-65535，默认为0（无限制） |
+| max_concurrency | u16 | 否 | 最大并发连接数 | 0-65535，默认为0（无限制） |
+| allowed_widths | Vec<u16> | 否 | 允许访问的视频宽度列表 | 数组，默认为空（允许所有宽度） |
 
 #### 响应格式
 
@@ -50,12 +50,31 @@ Video Storage 服务提供两组 API：
 #### CURL 示例
 
 ```bash
-# 创建一个有效期为1小时的令牌
+# 创建一个简单的令牌（所有限制参数使用默认值）
+curl -X POST http://localhost:32146/claims \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "video123",
+    "exp_unix": '$(($(date +%s) + 3600))'
+  }'
+
+# 创建一个带部分限制的令牌
 curl -X POST http://localhost:32146/claims \
   -H "Content-Type: application/json" \
   -d '{
     "asset_id": "video123",
     "exp_unix": '$(($(date +%s) + 3600))',
+    "max_kbps": 5000,
+    "allowed_widths": [1920, 1280]
+  }'
+
+# 创建一个完整配置的令牌
+curl -X POST http://localhost:32146/claims \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "video123",
+    "exp_unix": '$(($(date +%s) + 3600))',
+    "nbf_unix": '$(date +%s)',
     "window_len_sec": 300,
     "max_kbps": 5000,
     "max_concurrency": 3,
@@ -67,7 +86,7 @@ curl -X POST http://localhost:32146/claims \
 
 上传 MP4 文件并触发 HLS 转换任务。
 
-**接口地址**: `POST /upload`  
+**接口地址**: `POST /upload`
 **认证要求**: 无
 
 #### 查询参数 (Query Parameters)
@@ -120,7 +139,7 @@ curl -X POST "http://localhost:32146/upload?id=video123&crf=23" \
 
 上传与视频相关的其他文件（如字幕、缩略图等）。
 
-**接口地址**: `POST /upload-objects`  
+**接口地址**: `POST /upload-objects`
 **认证要求**: 无
 
 #### 查询参数 (Query Parameters)
@@ -177,7 +196,7 @@ curl -X POST "http://localhost:32146/upload-objects?id=video123&name=thumbnail.j
 
 获取已上传的视频对象文件。
 
-**接口地址**: `GET /objects/{job_id}/{filename}`  
+**接口地址**: `GET /objects/{job_id}/{filename}`
 **认证要求**: 无
 
 #### 路径参数
@@ -221,7 +240,7 @@ curl -H "Range: bytes=0-1048575" \
 
 获取当前待处理任务的统计信息。
 
-**接口地址**: `GET /waitlist`  
+**接口地址**: `GET /waitlist`
 **认证要求**: 无
 
 #### 请求参数
@@ -254,7 +273,7 @@ curl http://localhost:32146/waitlist
 
 获取转换后的视频文件（HLS 格式）。
 
-**接口地址**: `GET /videos/{filename}`  
+**接口地址**: `GET /videos/{filename}`
 **认证要求**: 需要有效的 claim 令牌
 
 #### 路径参数
@@ -309,10 +328,10 @@ curl -H "X-Claim-Token: your_token_here" \
 
 ### 令牌级别限制
 
-每个 claim 令牌包含以下限制参数：
-- `max_kbps`: 最大传输速率（千比特/秒）
-- `max_concurrency`: 最大并发连接数
-- `window_len_sec`: 时间窗口长度
+每个 claim 令牌包含以下限制参数（均为可选）：
+- `max_kbps`: 最大传输速率（千比特/秒），0 表示无限制
+- `max_concurrency`: 最大并发连接数，0 表示无限制
+- `window_len_sec`: 时间窗口长度，0 表示无限制
 
 ### 全局限制
 
@@ -369,7 +388,25 @@ curl -X POST "http://localhost:32146/upload-objects?id=myvideo&name=poster.jpg" 
 ### 2. 创建访问令牌
 
 ```bash
-# 创建一个24小时有效的令牌
+# 创建一个最简单的令牌（无任何限制）
+curl -X POST http://localhost:32146/claims \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "myvideo",
+    "exp_unix": '$(($(date +%s) + 86400))'
+  }'
+
+# 创建一个带速率限制的令牌
+curl -X POST http://localhost:32146/claims \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "myvideo",
+    "exp_unix": '$(($(date +%s) + 86400))',
+    "max_kbps": 10000,
+    "max_concurrency": 5
+  }'
+
+# 创建一个完整配置的令牌
 curl -X POST http://localhost:32146/claims \
   -H "Content-Type: application/json" \
   -d '{
@@ -442,7 +479,7 @@ s3_secret_access_key = "minioadmin"
 
 ## 注意事项
 
-1. **文件名限制**: 
+1. **文件名限制**:
    - job_id 不能包含 '/', '-', '.', ' ' 等特殊字符
    - 对象文件名不能包含 '/', ' '
 
@@ -451,26 +488,31 @@ s3_secret_access_key = "minioadmin"
    - 23-28: 标准质量，平衡质量和文件大小
    - 28-35: 低质量，文件较小
 
-3. **令牌安全**: 
+3. **令牌参数说明**:
+   - 所有限制参数（window_len_sec, max_kbps, max_concurrency, allowed_widths）均为可选
+   - 未指定或设为 0 表示无限制
+   - allowed_widths 为空数组表示允许所有分辨率
+
+4. **令牌安全**:
    - claim 令牌应该妥善保管
    - 不要在客户端代码中硬编码令牌
    - 建议使用 HTTPS 传输令牌
 
-4. **速率限制**: 
+5. **速率限制**:
    - 合理配置速率限制参数，避免带宽滥用
-   - max_kbps 应根据视频码率合理设置
-   - max_concurrency 限制单个令牌的并发连接数
+   - max_kbps = 0 表示不限速
+   - max_concurrency = 0 表示不限制并发数
 
-5. **缓存策略**: 
+6. **缓存策略**:
    - 视频文件默认设置 1 小时缓存
    - 建议配合 CDN 使用以提高性能
 
-6. **存储后端**: 
+7. **存储后端**:
    - 本地存储适合开发测试
    - 生产环境建议使用 S3 兼容存储
    - 支持自动故障转移（优先本地，其次 S3）
 
-7. **视频格式**: 
+8. **视频格式**:
    - 输入支持 MP4 格式
    - 输出为 HLS 格式（.m3u8 + .ts 文件）
    - 自动生成多分辨率版本
@@ -482,6 +524,7 @@ s3_secret_access_key = "minioadmin"
 3. **缓存策略**: 使用 CDN 缓存静态视频文件
 4. **存储选择**: 生产环境使用对象存储（S3）提高可扩展性
 5. **CRF 调优**: 根据实际需求平衡质量和文件大小
+6. **令牌限制**: 根据用户级别设置不同的速率限制
 
 ## 监控和运维
 
@@ -518,3 +561,12 @@ RUST_LOG=info video-storage
   "timestamp": "2025-01-09T12:34:56Z"
 }
 ```
+
+## API 版本历史
+
+### v1.0.0 (当前版本)
+- 支持 HLS 视频流
+- Claim 令牌认证
+- 速率限制功能
+- S3 存储支持
+- 灵活的令牌限制参数（全部可选）

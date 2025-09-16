@@ -3,7 +3,7 @@
 
 # Server configuration
 listen_on_port = 32145            # Port to listen on
-internal_addr = "127.0.0.1:32146" # Internal API address to bind to
+internal_port = 32146              # Internal API port to listen on
 permits = 5                       # Number of concurrent conversion jobs
 token_rate = 0.0                  # Token bucket rate limiting (0.0 = disabled)
 workspace = "./data"              # Working directory for file storage
@@ -32,6 +32,32 @@ storage_backend = "local"         # Storage backend: "local" or "s3"
 # 2 = "uBhfVeH0b7KQKfwOJqhwzLXKBpg7xLPBe5HjCksDDWg="
 
 # ============================================================================
+# Claim Creation Examples:
+# ============================================================================
+# Minimal claim (only required fields, no restrictions):
+# curl -X POST http://localhost:32146/claims \
+#   -H "Content-Type: application/json" \
+#   -d '{"asset_id": "video123", "exp_unix": 1234567900}'
+#
+# Claim with bandwidth limit only:
+# curl -X POST http://localhost:32146/claims \
+#   -H "Content-Type: application/json" \
+#   -d '{"asset_id": "video123", "exp_unix": 1234567900, "max_kbps": 5000}'
+#
+# Full claim with all restrictions:
+# curl -X POST http://localhost:32146/claims \
+#   -H "Content-Type: application/json" \
+#   -d '{
+#     "asset_id": "video123",
+#     "exp_unix": 1234567900,
+#     "nbf_unix": 1234567000,
+#     "window_len_sec": 300,
+#     "max_kbps": 5000,
+#     "max_concurrency": 10,
+#     "allowed_widths": [1920, 1280, 854]
+#   }'
+
+# ============================================================================
 # Example configurations for different scenarios:
 # ============================================================================
 
@@ -39,7 +65,7 @@ storage_backend = "local"         # Storage backend: "local" or "s3"
 # Simple local file storage, no external dependencies
 #
 # listen_on_port = 32145
-# internal_addr = "127.0.0.1:32146"
+# internal_port = 32146
 # permits = 5
 # token_rate = 0.0
 # workspace = "./data"
@@ -49,7 +75,7 @@ storage_backend = "local"         # Storage backend: "local" or "s3"
 # For self-hosted MinIO object storage
 #
 # listen_on_port = 32145
-# internal_addr = "127.0.0.1:32146"
+# internal_port = 32146
 # permits = 5
 # token_rate = 0.0
 # workspace = "./data"
@@ -64,7 +90,7 @@ storage_backend = "local"         # Storage backend: "local" or "s3"
 # For Amazon S3 cloud storage
 #
 # listen_on_port = 32145
-# internal_addr = "127.0.0.1:32146"
+# internal_port = 32146
 # permits = 5
 # token_rate = 0.0
 # workspace = "./data"
@@ -78,7 +104,7 @@ storage_backend = "local"         # Storage backend: "local" or "s3"
 # Full production setup with S3 and webhook notifications
 #
 # listen_on_port = 8080
-# internal_addr = "127.0.0.1:32146"
+# internal_port = 32146
 # permits = 10
 # token_rate = 100.0
 # workspace = "/var/lib/video-storage"

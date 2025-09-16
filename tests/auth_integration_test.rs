@@ -8,10 +8,14 @@ struct CreateClaimRequest {
     pub asset_id: String,
     pub nbf_unix: Option<u32>,
     pub exp_unix: u32,
-    pub window_len_sec: u16,
-    pub max_kbps: u16,
-    pub max_concurrency: u16,
-    pub allowed_widths: Vec<u16>,
+    #[serde(default)]
+    pub window_len_sec: Option<u16>,
+    #[serde(default)]
+    pub max_kbps: Option<u16>,
+    #[serde(default)]
+    pub max_concurrency: Option<u16>,
+    #[serde(default)]
+    pub allowed_widths: Option<Vec<u16>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -97,6 +101,18 @@ impl TestServer {
         allowed_widths: Vec<u16>,
         exp_offset: i64,
     ) -> Result<String, Box<dyn std::error::Error>> {
+        self.create_claim_with_concurrency(asset_id, Some(allowed_widths), exp_offset, Some(3))
+            .await
+    }
+
+    /// Create a claim token via HTTP API
+    async fn create_claim_with_concurrency(
+        &self,
+        asset_id: &str,
+        allowed_widths: Option<Vec<u16>>,
+        exp_offset: i64,
+        max_concurrency: Option<u16>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -106,9 +122,9 @@ impl TestServer {
             asset_id: asset_id.to_string(),
             nbf_unix: Some(now - 1), // Valid from 1 minute ago
             exp_unix: (now as i64 + exp_offset) as u32,
-            window_len_sec: 300,
-            max_kbps: 4000,
-            max_concurrency: 10,
+            window_len_sec: Some(300),
+            max_kbps: Some(5000),
+            max_concurrency,
             allowed_widths,
         };
 
@@ -312,10 +328,10 @@ async fn test_time_window_for_segments() {
         asset_id: "test_video".to_string(),
         nbf_unix: Some(now - 60),
         exp_unix: now + 3600,
-        window_len_sec: 120, // 30 segments max
-        max_kbps: 4000,
-        max_concurrency: 10,
-        allowed_widths: vec![],
+        window_len_sec: Some(120), // 30 segments max
+        max_kbps: Some(4000),
+        max_concurrency: Some(10),
+        allowed_widths: Some(vec![1920]),
     };
 
     let response = server
@@ -429,7 +445,7 @@ async fn test_concurrent_requests() {
 
     // Create a valid claim
     let token = server
-        .create_claim("test_video", vec![], 3600)
+        .create_claim_with_concurrency("test_video", None, 3600, None)
         .await
         .expect("Failed to create claim");
 
@@ -478,12 +494,12 @@ async fn test_claim_creation_validation() {
 
     let request = CreateClaimRequest {
         asset_id: "".to_string(), // Empty asset_id
-        nbf_unix: Some(now),
+        nbf_unix: Some(now - 60),
         exp_unix: now + 3600,
-        window_len_sec: 300,
-        max_kbps: 4000,
-        max_concurrency: 10,
-        allowed_widths: vec![],
+        window_len_sec: Some(300),
+        max_kbps: Some(5000),
+        max_concurrency: Some(3),
+        allowed_widths: Some(vec![]),
     };
 
     let response = server
@@ -500,11 +516,11 @@ async fn test_claim_creation_validation() {
     let request = CreateClaimRequest {
         asset_id: "test_video".to_string(),
         nbf_unix: Some(now + 3600),
-        exp_unix: now, // exp before nbf
-        window_len_sec: 300,
-        max_kbps: 4000,
-        max_concurrency: 10,
-        allowed_widths: vec![],
+        exp_unix: now,
+        window_len_sec: Some(300),
+        max_kbps: Some(5000),
+        max_concurrency: Some(3),
+        allowed_widths: Some(vec![]),
     };
 
     let response = server
@@ -516,4 +532,60 @@ async fn test_claim_creation_validation() {
         .unwrap();
 
     assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn test_claim_with_optional_parameters() {
+    let server = TestServer::start().await;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32;
+
+    // Test with minimal required fields only
+    let minimal_request = CreateClaimRequest {
+        asset_id: "test_video".to_string(),
+        nbf_unix: None,
+        exp_unix: now + 3600,
+        window_len_sec: None,
+        max_kbps: None,
+        max_concurrency: None,
+        allowed_widths: None,
+    };
+
+    let response = server
+        .client
+        .post(format!("{}/claims", server.int_url()))
+        .json(&minimal_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    let claim_response: CreateClaimResponse = response.json().await.unwrap();
+    assert!(!claim_response.token.is_empty());
+
+    // Test with some optional parameters
+    let partial_request = CreateClaimRequest {
+        asset_id: "test_video2".to_string(),
+        nbf_unix: None,
+        exp_unix: now + 7200,
+        window_len_sec: Some(300),
+        max_kbps: None,
+        max_concurrency: Some(5),
+        allowed_widths: None,
+    };
+
+    let response = server
+        .client
+        .post(format!("{}/claims", server.int_url()))
+        .json(&partial_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    let claim_response: CreateClaimResponse = response.json().await.unwrap();
+    assert!(!claim_response.token.is_empty());
 }
