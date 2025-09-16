@@ -83,7 +83,12 @@ Install Rust through [rustup](https://rustup.rs/):
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-The project includes a `rust-toolchain.toml` file that will automatically use the correct nightly version. If you need to manually set it:
+The project includes a `rust-toolchain.toml` file that pins to a specific nightly version (`nightly-2025-09-15`) to:
+- Avoid daily cache invalidation in CI
+- Ensure reproducible builds across environments
+- Maintain compatibility with unstable features
+
+The toolchain file will automatically use the correct version. If you need to manually install it:
 
 ```bash
 rustup install nightly
@@ -104,10 +109,6 @@ rustup component add rustfmt
 # Linting
 rustup component add clippy
 ```
-
-## Building the Project
-
-**Note**: The project uses Rust nightly features. The `rust-toolchain.toml` file will automatically select the correct version.
 
 ### Using Makefile
 

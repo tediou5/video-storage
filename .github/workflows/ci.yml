@@ -9,7 +9,7 @@ on:
 env:
     CARGO_TERM_COLOR: always
     RUST_BACKTRACE: 1
-    RUST_VERSION: nightly
+    RUST_VERSION: nightly-2025-09-15
 
 jobs:
     # First job: Install dependencies and build, then cache everything
