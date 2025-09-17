@@ -172,6 +172,7 @@ impl ClaimHeader {
 /// Claim manager for key management and token operations
 #[derive(Clone, Debug)]
 pub struct ClaimManager {
+    // TODO: tokio::sync::RwLock is not needed here
     keys: Arc<RwLock<HashMap<u8, [u8; 32]>>>,
     current_kid: Arc<AtomicU8>,
 }
@@ -195,19 +196,20 @@ impl ClaimManager {
 
     /// Create a ClaimManager from configuration
     /// If config_keys is provided, use them; otherwise generate random keys
-    pub fn from_config(config_keys: Option<HashMap<u8, [u8; 32]>>) -> Result<Self> {
-        let Some(keys) = config_keys else {
+    pub fn from_config(config_keys: Vec<(u8, [u8; 32])>) -> Result<Self> {
+        if config_keys.is_empty() {
             return Ok(Self::new());
         };
 
-        if keys.is_empty() {
-            return Ok(Self::new());
-        }
-
-        let first_kid = keys.keys().min().copied().expect("Must has key");
+        let first_kid = config_keys
+            .iter()
+            .map(|(k, _)| k)
+            .min()
+            .copied()
+            .expect("Must has key");
 
         Ok(Self {
-            keys: Arc::new(RwLock::new(keys)),
+            keys: Arc::new(RwLock::new(HashMap::from_iter(config_keys))),
             current_kid: Arc::new(AtomicU8::new(first_kid)),
         })
     }
@@ -1097,12 +1099,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_claim_manager_from_config_with_keys() {
-        let mut config_keys = std::collections::HashMap::new();
-        config_keys.insert(1, [1u8; 32]);
-        config_keys.insert(3, [2u8; 32]);
+        let config_keys = vec![(1, [1u8; 32]), (3, [2u8; 32])];
 
         // Create manager with configured keys
-        let manager = ClaimManager::from_config(Some(config_keys)).unwrap();
+        let manager = ClaimManager::from_config(config_keys).unwrap();
 
         // Test signing and verification
         let payload = ClaimPayloadV1 {
@@ -1125,7 +1125,7 @@ mod tests {
     #[tokio::test]
     async fn test_claim_manager_from_config_without_keys() {
         // Test fallback to random generation
-        let manager = ClaimManager::from_config(None).unwrap();
+        let manager = ClaimManager::from_config(Vec::new()).unwrap();
 
         let payload = ClaimPayloadV1 {
             exp_unix: 2000000000,
@@ -1145,9 +1145,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_claim_manager_from_config_empty_keys() {
-        let config_keys = std::collections::HashMap::new();
+        let config_keys = Vec::new();
 
-        let result = ClaimManager::from_config(Some(config_keys));
+        let result = ClaimManager::from_config(config_keys);
         assert!(result.is_ok());
         let key = result.unwrap();
         assert!(key.keys.read().await.len() == 1);
@@ -1155,12 +1155,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_claim_manager_key_rotation() {
-        let mut config_keys = std::collections::HashMap::new();
+        let config_keys = vec![(1, [1u8; 32]), (2, [2u8; 32])];
 
-        config_keys.insert(1, [1u8; 32]);
-        config_keys.insert(2, [2u8; 32]);
-
-        let manager = ClaimManager::from_config(Some(config_keys)).unwrap();
+        let manager = ClaimManager::from_config(config_keys).unwrap();
 
         // Sign with current key (should be kid=1)
         let payload = ClaimPayloadV1 {

@@ -5,7 +5,7 @@ use crate::{ConvertJob, JobGenerator, StreamMap, UploadJob};
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde_json::json;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::io::ErrorKind as StdIoErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -88,7 +88,7 @@ impl AppState {
         workspace: &Path,
         storage_manager: StorageManager,
         webhook_url: Option<String>,
-        claim_keys: Option<HashMap<u8, [u8; 32]>>,
+        claim_keys: Vec<(u8, [u8; 32])>,
     ) -> std::io::Result<Self> {
         init_workspace(workspace).await?;
         let (tx, rx) = unbounded();

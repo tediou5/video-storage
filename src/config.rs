@@ -1,10 +1,8 @@
-use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use clap::ArgAction::Append;
 use clap::Parser;
-use serde::{Deserialize, Serialize};
-use serde_with::base64::Base64;
-use serde_with::{DisplayFromStr, serde_as};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -32,7 +30,6 @@ use std::path::Path;
 ///
 /// # Webhook configuration (optional)
 /// webhook_url = "https://example.com/webhook"
-#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, Parser)]
 #[serde(default)]
 #[command(version, about, long_about = None)]
@@ -105,10 +102,12 @@ pub struct Config {
     /// Claim signing keys configuration (kid -> base64 encoded 32-byte key).
     /// Can be specified multiple times as --claim-key 1:base64key.
     /// You can generate a key with: openssl rand -base64 32
-    #[arg(long = "claim-key", value_parser = parse_claim_key)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "Option<HashMap<DisplayFromStr, Base64>>")]
-    pub claim_keys: Option<HashMap<u8, [u8; 32]>>,
+    #[arg(long = "claim-key", value_parser = parse_claim_key, action = Append)]
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "de_claim_keys"
+    )]
+    pub claim_keys: Vec<(u8, [u8; 32])>,
 }
 
 /// Parse claim key from command line format "kid:base64_key"
@@ -142,6 +141,38 @@ fn parse_claim_key(s: &str) -> Result<(u8, [u8; 32]), String> {
     Ok((kid, key))
 }
 
+fn de_claim_keys<'de, D>(de: D) -> Result<Vec<(u8, [u8; 32])>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut out: Vec<(u8, [u8; 32])> = Vec::new();
+
+    let repr = Option::<HashMap<String, String>>::deserialize(de)?;
+    let Some(repr) = repr else {
+        return Ok(out);
+    };
+
+    for (kstr, v) in repr {
+        let kid: u8 = kstr.parse().map_err(serde::de::Error::custom)?;
+        let bytes = STANDARD.decode(v).map_err(serde::de::Error::custom)?;
+        if bytes.len() != 32 {
+            return Err(serde::de::Error::custom(format!(
+                "claim_keys[{kid}] length {}, expect 32",
+                bytes.len()
+            )));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        out.push((kid, arr));
+    }
+
+    // 可选：按 kid 排序，去重（例如“后出现的覆盖前面”）
+    out.sort_unstable_by_key(|(k, _)| *k);
+    out.dedup_by_key(|(k, _)| *k);
+
+    Ok(out)
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -158,14 +189,14 @@ impl Default for Config {
             s3_access_key_id: None,
             s3_secret_access_key: None,
             webhook_url: None,
-            claim_keys: None,
+            claim_keys: Vec::new(),
         }
     }
 }
 
 impl Config {
     /// Load configuration from CLI args, optionally merging with a config file
-    pub fn load() -> Result<Self> {
+    pub fn load() -> anyhow::Result<Self> {
         // First parse CLI args
         let mut config = Config::parse();
 
@@ -180,7 +211,7 @@ impl Config {
     }
 
     /// Load configuration from a TOML file
-    pub fn from_file(path: &Path) -> Result<Self> {
+    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
@@ -229,7 +260,7 @@ impl Config {
         if self.webhook_url.is_none() {
             self.webhook_url = file_config.webhook_url;
         }
-        if self.claim_keys.is_none() {
+        if self.claim_keys.is_empty() {
             self.claim_keys = file_config.claim_keys;
         }
 
@@ -237,7 +268,7 @@ impl Config {
     }
 
     /// Validate the configuration
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> anyhow::Result<()> {
         // Validate storage configuration
         match self.storage_backend.as_str() {
             "local" => {
@@ -313,8 +344,11 @@ impl Config {
         })
     }
 
-    pub fn claim_keys(&self) -> Option<HashMap<u8, [u8; 32]>> {
-        self.claim_keys.clone()
+    pub fn get_claim_key(&self, kid: u8) -> Option<[u8; 32]> {
+        self.claim_keys
+            .iter()
+            .find(|(k, _)| *k == kid)
+            .map(|(_, key)| *key)
     }
 }
 
@@ -356,7 +390,42 @@ fn default_internal_port() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+
+    #[test]
+    fn test_args_with_claim_keys_from_cli() {
+        let key1 = STANDARD.encode([3u8; 32]);
+
+        let cli_content = [
+            "CLI".to_string(),
+            "--listen-on-port".to_string(),
+            "8080".to_string(),
+            "--internal-port".to_string(),
+            "8081".to_string(),
+            "--permits".to_string(),
+            "10".to_string(),
+            "--token-rate".to_string(),
+            "5.0".to_string(),
+            "--workspace".to_string(),
+            "/tmp/test".to_string(),
+            "--storage-backend".to_string(),
+            "local".to_string(),
+            "--claim-key".to_string(),
+            format!("1:{key1}"),
+            "--claim-key".to_string(),
+            "2:uBhfVeH0b7KQKfwOJqhwzLXKBpg7xLPBe5HjCksDDWg=".to_string(),
+        ];
+
+        let config = Config::try_parse_from(cli_content).unwrap();
+
+        assert_eq!(config.listen_on_port, 8080);
+        assert!(!config.claim_keys.is_empty());
+
+        assert_eq!(config.claim_keys.len(), 2);
+        assert!(config.get_claim_key(1).is_some());
+        assert!(config.get_claim_key(2).is_some());
+
+        assert_eq!(config.get_claim_key(1).unwrap(), [3u8; 32]);
+    }
 
     #[test]
     fn test_config_with_claim_keys_from_toml() {
@@ -380,14 +449,13 @@ mod tests {
         let config: Config = toml::from_str(&toml_content).unwrap();
 
         assert_eq!(config.listen_on_port, 8080);
-        assert!(config.claim_keys.is_some());
+        assert!(!config.claim_keys.is_empty());
 
-        let keys = config.claim_keys.unwrap();
-        assert_eq!(keys.len(), 2);
-        assert!(keys.contains_key(&1));
-        assert!(keys.contains_key(&2));
+        assert_eq!(config.claim_keys.len(), 2);
+        assert!(config.get_claim_key(1).is_some());
+        assert!(config.get_claim_key(2).is_some());
 
-        assert_eq!(keys.get(&1).unwrap(), &[3u8; 32]);
+        assert_eq!(config.get_claim_key(1).unwrap(), [3u8; 32]);
     }
 
     #[test]
@@ -402,7 +470,7 @@ mod tests {
         "#;
 
         let config: Config = toml::from_str(toml_content).unwrap();
-        assert!(config.claim_keys.is_none());
+        assert!(config.claim_keys.is_empty());
     }
 
     #[test]
@@ -436,10 +504,8 @@ mod tests {
     #[test]
     fn test_config_merge_with_claim_keys() {
         let mut file_config = Config::default();
-        let mut claim_keys = HashMap::new();
-        claim_keys.insert(1, [1u8; 32]);
-        claim_keys.insert(2, [2u8; 32]);
-        file_config.claim_keys = Some(claim_keys.clone());
+        let claim_keys = vec![(1, [1u8; 32]), (2, [2u8; 32])];
+        file_config.claim_keys = claim_keys.clone();
 
         let cli_config = Config {
             listen_on_port: 9000,
@@ -449,12 +515,12 @@ mod tests {
         let merged = cli_config.merge_with_file(file_config);
 
         assert_eq!(merged.listen_on_port, 9000); // CLI value takes precedence
-        assert_eq!(merged.claim_keys, Some(claim_keys)); // File value used when CLI is None
+        assert_eq!(merged.claim_keys, claim_keys); // File value used when CLI is None
     }
 
     #[test]
     fn test_config_default_has_no_claim_keys() {
         let config = Config::default();
-        assert!(config.claim_keys.is_none());
+        assert!(config.claim_keys.is_empty());
     }
 }
