@@ -41,7 +41,6 @@ aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.22"
 thiserror = "1.0"
-serde_with = { version = "3.14.0", features = ["base64"] }
 
 [dev-dependencies]
 tower = "0.5"
