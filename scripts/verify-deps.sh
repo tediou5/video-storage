@@ -221,13 +221,13 @@ install_ubuntu_deps() {
     local packages=(
         build-essential
         gcc
+        clang
         libavcodec-dev
         libavformat-dev
         libavutil-dev
         libswscale-dev
         libavfilter-dev
         libavdevice-dev
-        clang
         pkg-config
         nasm
         libopus-dev

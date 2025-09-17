@@ -119,17 +119,35 @@ jobs:
               with:
                   tool: cargo-nextest
 
+            # Cache FFmpeg source and build artifacts
+            - name: Cache FFmpeg build
+              uses: actions/cache@v4
+              id: ffmpeg-cache
+              with:
+                  path: |
+                      ~/.cargo/registry/src/*/ffmpeg-sys-next-*/ffmpeg-*
+                      target/debug/build/ffmpeg-sys-next-*/out
+                      target/release/build/ffmpeg-sys-next-*/out
+                  key: ffmpeg-${{ matrix.os-name }}-${{ hashFiles('**/Cargo.lock') }}-v3
+                  restore-keys: |
+                      ffmpeg-${{ matrix.os-name }}-
+                      ffmpeg-
+
             # Rust cache - handles cargo registry, git deps, and target directory
             - name: Setup Rust cache
               uses: Swatinem/rust-cache@v2
               with:
                   cache-on-failure: true
-                  prefix-key: "v1-rust-${{ matrix.os-name }}"
+                  prefix-key: "v2-rust-${{ matrix.os-name }}"
 
-            # Build
+            # Build with optimizations
             - name: Build all targets
               run: |
-                  cargo build --all-targets --all-features
+                  # Use parallel jobs
+                  export MAKEFLAGS="-j$(nproc)"
+
+                  # Build with incremental compilation
+                  cargo build --all-features
                   cargo build --release --all-features
 
             # Clippy
@@ -248,14 +266,18 @@ jobs:
                       build-essential
                   version: 1.0
 
+            # Cache FFmpeg build for quick check
+
             - name: Setup Rust cache
               uses: Swatinem/rust-cache@v2
               with:
                   cache-on-failure: true
-                  prefix-key: "v1-rust-quick"
+                  prefix-key: "v2-rust-quick"
 
             - name: Check compilation
-              run: cargo check --all-targets --all-features
+              run: |
+                  export MAKEFLAGS="-j$(nproc)"
+                  cargo check --all-targets --all-features
 
     # Final status check
     ci-success:
