@@ -70,6 +70,7 @@ These are the essential FFmpeg libraries that must be installed:
 sudo apt-get update
 sudo apt-get install -y \
     # Core FFmpeg libraries
+    ffmpeg \
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \
@@ -101,6 +102,7 @@ If you only need basic functionality:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
+    ffmpeg \
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \

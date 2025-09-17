@@ -290,9 +290,13 @@ impl AppState {
                                         };
                                         info!(id, "Creating upload job for remote storage");
                                         _ = this.job_tx.unbounded_send(upload_job.into());
+                                    } else {
+                                        this.call_webhook(&id, "convert", "completed").await;
                                     }
+                                    _ = tokio::fs::remove_file(this.uploads_dir().join(&id)).await;
 
-                                    this.call_webhook(&id, "convert", "completed").await;
+                                    // NO NEED
+                                    // this.call_webhook(&id, "convert", "completed").await;
                             },
                             Ok(job_kind) if job_kind == Job::KIND_UPLOAD => {
                                 info!("Upload Job {id} completed successfully");
@@ -304,7 +308,7 @@ impl AppState {
                                 _ = tokio::fs::write(this.pending_uploads_path(), dump).await;
                                 // Call webhook after successful upload
                                 this.call_webhook(&id, "upload", "completed").await;
-                                _ = tokio::fs::remove_dir_all(this.videos_dir.join(id)).await;
+                                _ = tokio::fs::remove_dir_all(this.videos_dir.join(&id)).await;
                             },
                             Err(job) => {
                                 warn!(job_id=%job.id(), job_kind=%job.kind(), "Retry job");

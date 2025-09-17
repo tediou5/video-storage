@@ -15,6 +15,7 @@ For detailed information about FFmpeg dependencies and troubleshooting, see [FFm
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
+    ffmpeg \
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \

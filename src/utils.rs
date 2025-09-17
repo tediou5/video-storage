@@ -6,6 +6,7 @@ use ez_ffmpeg::filter::frame_filter_context::FrameFilterContext;
 use ez_ffmpeg::filter::frame_pipeline_builder::FramePipelineBuilder;
 use ez_ffmpeg::{AVMediaType, Input};
 use ez_ffmpeg::{FfmpegContext, Output};
+use ffmpeg_next::{codec, format, media};
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -22,12 +23,18 @@ pub async fn spawn_hls_job(
     let temp_dir = temp_dir.join(format!("tmp-{}", job.id()));
     let out_dir = videos_dir.join(job.id());
     tokio::fs::create_dir_all(&temp_dir).await?;
+    let sanitized_input = format!("/tmp/{}.sanitized.mp4", job.id());
+    _ = std::fs::File::create(&sanitized_input).expect("Failed to create tmp sanitized file");
 
     let input_path = upload_path.clone();
     tokio::task::spawn_blocking(move || {
-        create_master_playlist(&job, &input_path, &temp_dir)?;
+        remux_av_only(input_path.to_str().unwrap(), &sanitized_input)
+            .inspect_err(|error| error!(?input_path, ?error, "remuxing input failed"))?;
+
+        create_master_playlist(&job, &sanitized_input, &temp_dir)?;
         // Remove existing directory if it exists
         _ = std::fs::remove_dir_all(&out_dir);
+        _ = std::fs::remove_file(sanitized_input);
         std::fs::rename(&temp_dir, &out_dir)?;
         info!(
             job_id = job.id(),
@@ -44,7 +51,7 @@ pub async fn spawn_hls_job(
 /// Convert MP4 to a VP9 variant with specified scales.
 pub fn convert_with_scales(
     job: &ConvertJob,
-    input: &Path,
+    input: &str,
     output: &Path,
     scales: &[(u32, u32)],
     progress_callbacker: Arc<ProgressCallBacker>,
@@ -93,23 +100,70 @@ pub fn convert_with_scales(
     let graphs = format!("[0:v]split={target_scales}{outs}{scales}");
     debug!(%job_id, %crf, ?input, ?graphs, "Converting to HLS");
 
-    let input = Input::from(input.to_str().unwrap());
+    let input = Input::from(input);
     let builder = FfmpegContext::builder().input(input).filter_desc(graphs);
     Ok(builder.outputs(outputs).build()?.start()?.wait()?)
 }
 
-pub fn create_master_playlist(job: &ConvertJob, input: &Path, output: &Path) -> anyhow::Result<()> {
+/// Remux video: copy video and audio streams without re-encoding, skip subtitle streams
+/// Equivalent to: ffmpeg -i in.mp4 -map 0:v -map 0:a? -c:v copy -c:a copy -dn out.mp4
+fn remux_av_only(input: &str, output: &str) -> anyhow::Result<()> {
+    debug!(?input, ?output, "remux_av_only: skip subtitle streams");
+    let mut input_context = format::input(input)?;
+    let mut output_context = format::output(output)?;
+    let mut stream_mapping = vec![None; input_context.nb_streams() as usize];
+
+    for (i, stream) in input_context.streams().enumerate() {
+        let medium = stream.parameters().medium();
+
+        // Only copy video and audio streams (skip subtitle and data streams)
+        match medium {
+            media::Type::Video | media::Type::Audio => {
+                let mut output_stream = output_context.add_stream(codec::Id::None)?;
+                output_stream.set_parameters(stream.parameters());
+                output_stream.set_time_base(stream.time_base());
+
+                stream_mapping[i] = Some(output_stream.index());
+            }
+            _ => {
+                // Skip other stream types (subtitles, data, etc.)
+                stream_mapping[i] = None;
+            }
+        }
+    }
+
+    output_context.write_header()?;
+
+    for (stream, mut packet) in input_context.packets() {
+        let stream_index = stream.index();
+
+        if let Some(output_index) = stream_mapping[stream_index] {
+            let out_stream = output_context.stream(output_index).unwrap();
+            packet.set_stream(output_index);
+            packet.rescale_ts(stream.time_base(), out_stream.time_base());
+
+            packet.write_interleaved(&mut output_context)?;
+        }
+    }
+
+    output_context.write_trailer()?;
+
+    debug!(?input, ?output, "remux_av_only: done");
+
+    Ok(())
+}
+
+pub fn create_master_playlist(job: &ConvertJob, input: &str, output: &Path) -> anyhow::Result<()> {
     let job_id = job.id();
 
-    let input_str = input.to_str().unwrap();
-    let total = get_duration_us(input_str).unwrap();
+    let total = get_duration_us(input).unwrap();
     info!(%job_id, "Duration: {total} us");
 
     let mut progress_callbacker = ProgressCallBacker::new(job_id.to_string());
     progress_callbacker.total_duration = total;
 
     // Retrieve the audio stream information
-    let audio_info = ez_ffmpeg::stream_info::find_audio_stream_info(input_str).unwrap();
+    let audio_info = ez_ffmpeg::stream_info::find_audio_stream_info(input).unwrap();
     if let Some(audio_info) = audio_info {
         if let ez_ffmpeg::stream_info::StreamInfo::Audio { time_base, .. } = audio_info {
             progress_callbacker.time_base = time_base;
