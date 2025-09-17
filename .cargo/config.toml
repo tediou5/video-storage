@@ -1,0 +1,18 @@
+# Cargo configuration for optimized builds
+
+[profile.dev]
+# Faster debug builds
+debug = 1
+incremental = true
+
+[profile.release]
+# Optimized release builds
+lto = "thin"
+codegen-units = 1
+
+[net]
+# Use sparse registry for faster dependency resolution
+git-fetch-with-cli = true
+
+[registries.crates-io]
+protocol = "sparse"
