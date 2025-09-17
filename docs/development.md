@@ -13,8 +13,8 @@ For detailed information about FFmpeg dependencies and troubleshooting, see [FFm
 #### Ubuntu/Debian
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
+sudo apt-get update && sudo apt-get install -y \
+    build-essential \
     ffmpeg \
     libavcodec-dev \
     libavformat-dev \
@@ -31,8 +31,8 @@ sudo apt-get install -y \
     libx265-dev \
     libvorbis-dev \
     libmp3lame-dev \
-    libfdk-aac-dev \
-    libass-dev
+    libass-dev \
+    libssl-dev
 ```
 
 **Note**: These codec libraries are essential for FFmpeg to support various video and audio formats:
@@ -42,7 +42,6 @@ sudo apt-get install -y \
 - `libx265-dev`: H.265/HEVC video codec
 - `libvorbis-dev`: Vorbis audio codec
 - `libmp3lame-dev`: MP3 audio codec
-- `libfdk-aac-dev`: AAC audio codec
 - `libass-dev`: Subtitle rendering
 
 #### macOS
@@ -53,16 +52,18 @@ brew install ffmpeg pkg-config nasm
 
 **Note**: Homebrew's ffmpeg formula typically includes most codecs by default. If you need specific codecs, you can install ffmpeg with options:
 ```bash
-brew install ffmpeg --with-libvpx --with-opus --with-fdk-aac
+brew install ffmpeg --with-libvpx --with-opus
 ```
 
 #### Fedora/RHEL/CentOS
 
 ```bash
 sudo dnf install -y \
+    gcc \
+    gcc-c++ \
+    make \
     ffmpeg-devel \
     clang \
-    pkg-config \
     nasm \
     opus-devel \
     libvpx-devel \
@@ -70,8 +71,8 @@ sudo dnf install -y \
     x265-devel \
     libvorbis-devel \
     lame-devel \
-    fdk-aac-devel \
-    libass-devel
+    libass-devel \
+    openssl-devel
 ```
 
 ### Rust

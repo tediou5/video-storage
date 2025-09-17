@@ -9,84 +9,12 @@ on:
 env:
     CARGO_TERM_COLOR: always
     RUST_BACKTRACE: 1
-    RUST_VERSION: nightly-2025-09-15
+    RUST_VERSION: nightly-2024-09-15
 
 jobs:
-    # First job: Install dependencies and build, then cache everything
-    setup-and-build:
-        name: Setup and Build
-        runs-on: ubuntu-latest
-        outputs:
-            cache-key: ${{ steps.cache-key.outputs.key }}
-        steps:
-            - uses: actions/checkout@v4
-
-            - name: Generate cache key
-              id: cache-key
-              run: echo "key=${{ runner.os }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('**/Cargo.lock') }}" >> $GITHUB_OUTPUT
-
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@nightly
-              with:
-                  components: rustfmt, clippy
-
-            - name: Install system dependencies
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y \
-                    libavcodec-dev \
-                    libavformat-dev \
-                    libavutil-dev \
-                    libswscale-dev \
-                    libavfilter-dev \
-                    libavdevice-dev \
-                    clang \
-                    pkg-config \
-                    nasm \
-                    libopus-dev \
-                    libvpx-dev \
-                    libx264-dev \
-                    libx265-dev \
-                    libvorbis-dev \
-                    libmp3lame-dev \
-                    libfdk-aac-dev \
-                    libass-dev
-
-            - name: Install cargo-nextest
-              uses: taiki-e/install-action@v2
-              with:
-                  tool: cargo-nextest
-
-            - name: Cache cargo registry and build
-              uses: actions/cache@v4
-              id: cache
-              with:
-                  path: |
-                      ~/.cargo/bin/
-                      ~/.cargo/registry/index/
-                      ~/.cargo/registry/cache/
-                      ~/.cargo/git/db/
-                      target/
-                  key: ${{ steps.cache-key.outputs.key }}
-                  restore-keys: |
-                      ${{ runner.os }}-rust-${{ env.RUST_VERSION }}-
-
-            - name: Build all targets
-              run: |
-                  cargo build --all-targets --all-features
-                  cargo build --release --all-features
-
-            - name: Upload build artifacts
-              uses: actions/upload-artifact@v4
-              with:
-                  name: build-artifacts
-                  path: target/
-                  retention-days: 1
-
-    # Parallel jobs that depend on setup-and-build
+    # Format check - runs independently, doesn't need build
     fmt:
         name: Format Check
-        needs: setup-and-build
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
@@ -99,175 +27,251 @@ jobs:
             - name: Check formatting
               run: cargo fmt --all -- --check
 
-    clippy:
-        name: Clippy Check
-        needs: setup-and-build
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
-
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@nightly
-              with:
-                  components: clippy
-
-            - name: Install system dependencies
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y \
-                    libavcodec-dev \
-                    libavformat-dev \
-                    libavutil-dev \
-                    libswscale-dev \
-                    libavfilter-dev \
-                    libavdevice-dev \
-                    clang \
-                    pkg-config \
-                    nasm \
-                    libopus-dev \
-                    libvpx-dev \
-                    libx264-dev \
-                    libx265-dev \
-                    libvorbis-dev \
-                    libmp3lame-dev \
-                    libfdk-aac-dev \
-                    libass-dev
-
-            - name: Download build artifacts
-              uses: actions/download-artifact@v4
-              with:
-                  name: build-artifacts
-                  path: target/
-
-            - name: Cache cargo registry
-              uses: actions/cache@v4
-              with:
-                  path: |
-                      ~/.cargo/bin/
-                      ~/.cargo/registry/index/
-                      ~/.cargo/registry/cache/
-                      ~/.cargo/git/db/
-                  key: ${{ needs.setup-and-build.outputs.cache-key }}
-                  restore-keys: |
-                      ${{ runner.os }}-rust-${{ env.RUST_VERSION }}-
-
-            - name: Run clippy
-              run: cargo clippy --all-targets --all-features -- -D warnings
-
-    test:
-        name: Test Suite
-        needs: setup-and-build
-        runs-on: ubuntu-latest
+    # Build and test on multiple OS
+    build-and-test:
+        name: Build and Test (${{ matrix.os-name }})
+        runs-on: ${{ matrix.runs-on }}
+        container: ${{ matrix.container }}
         strategy:
+            fail-fast: false
             matrix:
-                test-type: [nextest, doc]
+                include:
+                    - os-name: Ubuntu 22.04
+                      runs-on: ubuntu-22.04
+                      container: null
+                      pkg-manager: apt
+                    - os-name: Rocky Linux 9
+                      runs-on: ubuntu-latest
+                      container: rockylinux:9
+                      pkg-manager: dnf
+
         steps:
             - uses: actions/checkout@v4
 
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@nightly
-
-            - name: Install system dependencies
+            # Install build tools for Rocky Linux
+            - name: Install build essentials (Rocky Linux)
+              if: matrix.pkg-manager == 'dnf'
               run: |
-                  sudo apt-get update
-                  sudo apt-get install -y \
-                    libavcodec-dev \
-                    libavformat-dev \
-                    libavutil-dev \
-                    libswscale-dev \
-                    libavfilter-dev \
-                    libavdevice-dev \
-                    clang \
-                    pkg-config \
-                    nasm \
-                    libopus-dev \
-                    libvpx-dev \
-                    libx264-dev \
-                    libx265-dev \
-                    libvorbis-dev \
-                    libmp3lame-dev \
-                    libfdk-aac-dev \
-                    libass-dev
+                  dnf install -y epel-release
+                  dnf config-manager --set-enabled crb
+                  dnf install -y git gcc gcc-c++ make cmake pkgconfig
 
+            # Install Rust
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: ${{ env.RUST_VERSION }}
+                  components: rustfmt, clippy
+
+            # Cache for Ubuntu APT packages
+            - name: Cache APT packages (Ubuntu)
+              if: matrix.pkg-manager == 'apt'
+              uses: awalsh128/cache-apt-pkgs-action@latest
+              with:
+                  packages: |
+                      libavcodec-dev
+                      libavformat-dev
+                      libavutil-dev
+                      libswscale-dev
+                      libavfilter-dev
+                      libavdevice-dev
+                      clang
+                      pkg-config
+                      nasm
+                      libopus-dev
+                      libvpx-dev
+                      libx264-dev
+                      libx265-dev
+                      libvorbis-dev
+                      libmp3lame-dev
+                      libass-dev
+                      libssl-dev
+                  version: 1.0
+
+            # Install system dependencies for Rocky Linux
+            - name: Install FFmpeg dependencies (Rocky Linux)
+              if: matrix.pkg-manager == 'dnf'
+              run: |
+                  # Enable RPM Fusion for FFmpeg
+                  dnf install -y --nogpgcheck https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
+                  dnf install -y --nogpgcheck https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm
+
+                  # Install FFmpeg and development packages
+                  dnf install -y \
+                    gcc \
+                    gcc-c++ \
+                    make \
+                    ffmpeg-devel \
+                    clang \
+                    nasm \
+                    opus-devel \
+                    libvpx-devel \
+                    x264-devel \
+                    x265-devel \
+                    libvorbis-devel \
+                    lame-devel \
+                    libass-devel \
+                    openssl-devel
+
+            # Install cargo-nextest
             - name: Install cargo-nextest
-              if: matrix.test-type == 'nextest'
               uses: taiki-e/install-action@v2
               with:
                   tool: cargo-nextest
 
-            - name: Download build artifacts
-              uses: actions/download-artifact@v4
+            # Rust cache - handles cargo registry, git deps, and target directory
+            - name: Setup Rust cache
+              uses: Swatinem/rust-cache@v2
               with:
-                  name: build-artifacts
-                  path: target/
+                  cache-on-failure: true
+                  prefix-key: "v1-rust-${{ matrix.os-name }}"
 
-            - name: Cache cargo registry
-              uses: actions/cache@v4
-              with:
-                  path: |
-                      ~/.cargo/bin/
-                      ~/.cargo/registry/index/
-                      ~/.cargo/registry/cache/
-                      ~/.cargo/git/db/
-                  key: ${{ needs.setup-and-build.outputs.cache-key }}
-                  restore-keys: |
-                      ${{ runner.os }}-rust-${{ env.RUST_VERSION }}-
+            # Build
+            - name: Build all targets
+              run: |
+                  cargo build --all-targets --all-features
+                  cargo build --release --all-features
 
+            # Clippy
+            - name: Run clippy
+              run: cargo clippy --all-targets --all-features -- -D warnings
+
+            # Tests
             - name: Run tests with nextest
-              if: matrix.test-type == 'nextest'
               run: cargo nextest run --all-features
 
             - name: Run doc tests
-              if: matrix.test-type == 'doc'
               run: cargo test --doc --all-features
 
-    verify-binary:
-        name: Verify Binary
-        needs: setup-and-build
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
-
-            - name: Install system dependencies
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y \
-                    libavcodec-dev \
-                    libavformat-dev \
-                    libavutil-dev \
-                    libswscale-dev \
-                    libavfilter-dev \
-                    libavdevice-dev \
-                    nasm \
-                    libopus-dev \
-                    libvpx-dev
-
-            - name: Download build artifacts
-              uses: actions/download-artifact@v4
-              with:
-                  name: build-artifacts
-                  path: target/
-
-            - name: Make binary executable
-              run: chmod +x ./target/release/video-storage
-
-            - name: Check binary
+            # Verify binary
+            - name: Verify binary
               run: |
                   ./target/release/video-storage --version || true
                   ./target/release/video-storage --help
 
-    # Final status check job
+    # Verify dependency installation scripts
+    # Note: For more comprehensive dependency testing, see .github/workflows/verify-deps.yml
+    # This job ensures our dependency installer script works correctly on both platforms
+    verify-deps:
+        name: Verify Dependencies (${{ matrix.os-name }})
+        runs-on: ${{ matrix.runs-on }}
+        container: ${{ matrix.container }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os-name: Ubuntu 22.04
+                      runs-on: ubuntu-22.04
+                      container: null
+                    - os-name: Rocky Linux 9
+                      runs-on: ubuntu-latest
+                      container: rockylinux:9
+
+        steps:
+            - uses: actions/checkout@v4
+
+            # Install basic tools for Rocky Linux
+            - name: Install basic tools (Rocky Linux)
+              if: contains(matrix.container, 'rocky')
+              run: |
+                  dnf install -y git sudo
+
+            # Use verify-deps.sh script to install all dependencies
+            - name: Install dependencies using verify-deps.sh
+              run: |
+                  chmod +x ./scripts/verify-deps.sh
+                  # For Ubuntu, use sudo; for Rocky container, run as root
+                  if [ -z "${{ matrix.container }}" ]; then
+                      sudo ./scripts/verify-deps.sh --verbose
+                  else
+                      ./scripts/verify-deps.sh --verbose
+                  fi
+
+            # Verify installation was successful
+            - name: Verify dependencies installed correctly
+              run: |
+                  ./scripts/verify-deps.sh --check-only --verbose
+
+            # Install Rust to test compilation
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: ${{ env.RUST_VERSION }}
+
+            # Test that the project can compile with verified dependencies
+            - name: Test compilation
+              run: |
+                  cargo --version
+                  cargo build --all-features
+                  cargo build --release --all-features
+
+            # Test that the binary runs
+            - name: Test binary execution
+              run: |
+                  ./target/release/video-storage --version
+                  ./target/release/video-storage --help
+
+    # Minimal build test for quick feedback
+    quick-check:
+        name: Quick Check
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: ${{ env.RUST_VERSION }}
+                  components: clippy
+
+            - name: Cache APT packages
+              uses: awalsh128/cache-apt-pkgs-action@latest
+              with:
+                  packages: |
+                      libavcodec-dev
+                      libavformat-dev
+                      libavutil-dev
+                      libswscale-dev
+                      libavfilter-dev
+                      libavdevice-dev
+                      clang
+                      pkg-config
+                      nasm
+                      libopus-dev
+                      libvpx-dev
+                      libx264-dev
+                      libx265-dev
+                      libvorbis-dev
+                      libmp3lame-dev
+                      libass-dev
+                      libssl-dev
+                      build-essential
+                  version: 1.0
+
+            - name: Setup Rust cache
+              uses: Swatinem/rust-cache@v2
+              with:
+                  cache-on-failure: true
+                  prefix-key: "v1-rust-quick"
+
+            - name: Check compilation
+              run: cargo check --all-targets --all-features
+
+    # Final status check
     ci-success:
         name: CI Success
         if: always()
-        needs: [fmt, clippy, test, verify-binary]
+        needs: [fmt, build-and-test, quick-check, verify-deps]
         runs-on: ubuntu-latest
         steps:
             - name: Check all job results
               run: |
                   if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
-                    echo "One or more jobs failed"
+                    echo "❌ One or more jobs failed"
+                    exit 1
+                  elif [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+                    echo "⚠️ One or more jobs were cancelled"
                     exit 1
                   else
-                    echo "All jobs passed successfully"
+                    echo "✅ All jobs passed successfully"
                   fi

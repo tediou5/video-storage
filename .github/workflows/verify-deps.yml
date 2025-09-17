@@ -1,0 +1,333 @@
+name: Verify Dependency Installer
+
+on:
+    # Run on push to dependency-related files
+    push:
+        paths:
+            - "scripts/verify-deps.sh"
+            - ".github/workflows/verify-deps.yml"
+            - "README.md"
+        branches: [main, master, develop]
+
+    # Run on pull requests that modify dependency-related files
+    pull_request:
+        paths:
+            - "scripts/verify-deps.sh"
+            - ".github/workflows/verify-deps.yml"
+            - "README.md"
+        branches: [main, master, develop]
+
+    # Allow manual trigger
+    workflow_dispatch:
+
+env:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+    RUST_VERSION: nightly-2024-09-15
+
+jobs:
+    # Test the script in a completely clean environment
+    test-clean-install:
+        name: Clean Install (${{ matrix.os-name }})
+        runs-on: ${{ matrix.runs-on }}
+        container: ${{ matrix.container }}
+        defaults:
+            run:
+                shell: bash
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os-name: Ubuntu 22.04
+                      runs-on: ubuntu-latest
+                      container: ubuntu:22.04
+                    - os-name: Rocky Linux 9
+                      runs-on: ubuntu-latest
+                      container: rockylinux:9
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install basic tools (Ubuntu)
+              if: contains(matrix.container, 'ubuntu')
+              run: |
+                  apt-get update
+                  apt-get install -y git curl sudo build-essential gcc pkg-config
+
+            - name: Install basic tools (Rocky)
+              if: contains(matrix.container, 'rocky')
+              run: |
+                  dnf install -y git sudo which
+                  # Use --allowerasing to handle curl-minimal conflict
+                  dnf install -y --allowerasing curl || echo "curl install failed, continuing"
+
+            - name: Test verify-deps.sh in check mode
+              run: |
+                  echo "::group::Testing check-only mode"
+                  chmod +x ./scripts/verify-deps.sh
+                  ./scripts/verify-deps.sh --check-only --verbose || true
+                  echo "::endgroup::"
+
+            - name: Run verify-deps.sh to install dependencies
+              run: |
+                  echo "::group::Installing dependencies with verify-deps.sh"
+                  ./scripts/verify-deps.sh --verbose
+                  echo "::endgroup::"
+
+            - name: Verify FFmpeg libraries are installed
+              run: |
+                  echo "::group::Verifying FFmpeg libraries"
+                  for lib in libavcodec libavformat libavutil libswscale libavfilter libavdevice; do
+                      if pkg-config --exists $lib; then
+                          echo "✓ $lib: $(pkg-config --modversion $lib)"
+                      else
+                          echo "✗ $lib not found"
+                          exit 1
+                      fi
+                  done
+                  echo "::endgroup::"
+
+            - name: Install Rust
+              run: |
+                  echo "::group::Installing Rust"
+                  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
+                  echo "::endgroup::"
+
+            - name: Build the project
+              run: |
+                  . "$HOME/.cargo/env"
+                  echo "::group::Building project"
+                  cargo --version
+                  cargo build --all-features
+                  cargo build --release --all-features
+                  echo "::endgroup::"
+
+            - name: Verify binary works
+              run: |
+                  . "$HOME/.cargo/env"
+                  echo "::group::Testing binary"
+                  ./target/release/video-storage --version
+                  ./target/release/video-storage --help
+                  echo "::endgroup::"
+
+    # Test the script with partially installed dependencies
+    test-partial-install:
+        name: Partial Install (${{ matrix.os-name }})
+        runs-on: ${{ matrix.runs-on }}
+        container: ${{ matrix.container }}
+        defaults:
+            run:
+                shell: bash
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os-name: Ubuntu 22.04
+                      runs-on: ubuntu-latest
+                      container: ubuntu:22.04
+                    - os-name: Rocky Linux 9
+                      runs-on: ubuntu-latest
+                      container: rockylinux:9
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install basic tools and some dependencies (Ubuntu)
+              if: contains(matrix.container, 'ubuntu')
+              run: |
+                  apt-get update
+                  apt-get install -y git curl sudo build-essential gcc pkg-config clang
+                  # Install only some FFmpeg libraries
+                  apt-get install -y libavcodec-dev libavformat-dev
+
+            - name: Install basic tools and some dependencies (Rocky)
+              if: contains(matrix.container, 'rocky')
+              run: |
+                  dnf install -y git sudo which pkgconfig clang gcc gcc-c++
+                  # Use --allowerasing to handle curl-minimal conflict
+                  dnf install -y --allowerasing curl || echo "curl install failed, continuing"
+                  # First install EPEL and enable CRB
+                  dnf install -y epel-release
+                  dnf config-manager --set-enabled crb || true
+                  # Update metadata after adding repositories
+                  dnf makecache
+                  # Now install packages that require EPEL
+                  dnf install -y nasm opus-devel
+
+            - name: Run verify-deps.sh to complete installation
+              run: |
+                  echo "::group::Completing installation with verify-deps.sh"
+                  chmod +x ./scripts/verify-deps.sh
+                  ./scripts/verify-deps.sh --verbose
+                  echo "::endgroup::"
+
+            - name: Verify all dependencies are now installed
+              run: |
+                  echo "::group::Verifying complete installation"
+                  ./scripts/verify-deps.sh --check-only --verbose
+                  echo "::endgroup::"
+
+    # Test the script in dry-run mode
+    test-dry-run:
+        name: Dry Run Test
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                shell: bash
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Test dry-run mode
+              run: |
+                  chmod +x ./scripts/verify-deps.sh
+                  echo "::group::Testing dry-run mode"
+                  ./scripts/verify-deps.sh --dry-run --verbose
+                  echo "::endgroup::"
+
+            - name: Verify nothing was installed
+              run: |
+                  echo "::group::Verifying no packages were installed"
+                  # Check that FFmpeg is not installed
+                  if command -v ffmpeg; then
+                      echo "Error: ffmpeg found but shouldn't be installed in dry-run"
+                      exit 1
+                  fi
+                  echo "✓ Dry-run mode worked correctly"
+                  echo "::endgroup::"
+
+    # Test force reinstall
+    test-force-reinstall:
+        name: Force Reinstall Test
+        runs-on: ubuntu-22.04
+        defaults:
+            run:
+                shell: bash
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: First installation
+              run: |
+                  echo "::group::First installation"
+                  chmod +x ./scripts/verify-deps.sh
+                  sudo ./scripts/verify-deps.sh --verbose
+                  echo "::endgroup::"
+
+            - name: Force reinstall
+              run: |
+                  echo "::group::Force reinstall"
+                  sudo ./scripts/verify-deps.sh --force --verbose
+                  echo "::endgroup::"
+
+            - name: Verify installation
+              run: |
+                  echo "::group::Verifying installation"
+                  ./scripts/verify-deps.sh --check-only --verbose
+                  echo "::endgroup::"
+
+    # Test on native runners (without containers)
+    test-native:
+        name: Native Runner (${{ matrix.os }})
+        runs-on: ${{ matrix.os }}
+        defaults:
+            run:
+                shell: bash
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-22.04]
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Remove existing packages (simulate clean environment)
+              run: |
+                  echo "::group::Removing existing packages"
+                  # Remove FFmpeg packages if they exist
+                  sudo apt-get remove -y \
+                      libavcodec-dev libavformat-dev libavutil-dev \
+                      libswscale-dev libavfilter-dev libavdevice-dev \
+                      2>/dev/null || true
+                  echo "::endgroup::"
+
+            - name: Run verify-deps.sh
+              run: |
+                  echo "::group::Installing with verify-deps.sh"
+                  chmod +x ./scripts/verify-deps.sh
+                  sudo ./scripts/verify-deps.sh --verbose
+                  echo "::endgroup::"
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: ${{ env.RUST_VERSION }}
+
+            - name: Build and test
+              run: |
+                  echo "::group::Building and testing"
+                  cargo build --all-features
+                  cargo build --release --all-features
+                  cargo test --all-features
+                  ./target/release/video-storage --version
+                  echo "::endgroup::"
+
+    # Summary job
+    summary:
+        name: Installation Tests Summary
+        if: always()
+        needs:
+            [
+                test-clean-install,
+                test-partial-install,
+                test-dry-run,
+                test-force-reinstall,
+                test-native,
+            ]
+        runs-on: ubuntu-latest
+        steps:
+            - name: Check results
+              run: |
+                  echo "## Dependency Installer Test Results"
+                  echo ""
+
+                  check_status() {
+                      local job_name=$1
+                      local job_result=$2
+                      if [ "$job_result" == "success" ]; then
+                          echo "✅ $job_name: SUCCESS"
+                      elif [ "$job_result" == "skipped" ]; then
+                          echo "⏭️ $job_name: SKIPPED"
+                      elif [ "$job_result" == "cancelled" ]; then
+                          echo "⚠️ $job_name: CANCELLED"
+                      else
+                          echo "❌ $job_name: FAILED"
+                      fi
+                  }
+
+                  check_status "Clean Install Test" "${{ needs.test-clean-install.result }}"
+                  check_status "Partial Install Test" "${{ needs.test-partial-install.result }}"
+                  check_status "Dry Run Test" "${{ needs.test-dry-run.result }}"
+                  check_status "Force Reinstall Test" "${{ needs.test-force-reinstall.result }}"
+                  check_status "Native Runner Test" "${{ needs.test-native.result }}"
+
+                  echo ""
+
+                  # Overall status
+                  if [ "${{ contains(needs.*.result, 'failure') }}" == "true" ]; then
+                      echo "❌ Some tests failed!"
+                      echo ""
+                      echo "The verify-deps.sh script may not be working correctly."
+                      echo "Please check the logs above for details."
+                      exit 1
+                  elif [ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]; then
+                      echo "⚠️ Some tests were cancelled"
+                      exit 1
+                  else
+                      echo "✅ All tests passed!"
+                      echo ""
+                      echo "The verify-deps.sh script is working correctly and can:"
+                      echo "- Install dependencies in clean environments"
+                      echo "- Complete partial installations"
+                      echo "- Run in dry-run mode without making changes"
+                      echo "- Force reinstall dependencies"
+                      echo "- Work on native runners"
+                  fi

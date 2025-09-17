@@ -1,5 +1,106 @@
 # video storage
 
+## System Dependencies Installation
+
+### Ubuntu 22.04
+
+Install FFmpeg and development libraries:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  libavcodec-dev \
+  libavformat-dev \
+  libavutil-dev \
+  libswscale-dev \
+  libavfilter-dev \
+  libavdevice-dev \
+  clang \
+  pkg-config \
+  nasm \
+  libopus-dev \
+  libvpx-dev \
+  libx264-dev \
+  libx265-dev \
+  libvorbis-dev \
+  libmp3lame-dev \
+  libass-dev \
+  libssl-dev
+```
+
+### Rocky Linux 9
+
+Install FFmpeg and development libraries:
+
+```bash
+# Enable EPEL and CRB repositories
+sudo dnf install -y epel-release
+sudo dnf config-manager --set-enabled crb
+
+# Enable RPM Fusion for FFmpeg
+sudo dnf install -y --nogpgcheck \
+  https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm \
+  https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm
+
+# Install FFmpeg and development packages
+sudo dnf install -y \
+  gcc \
+  gcc-c++ \
+  make \
+  ffmpeg-devel \
+  clang \
+  nasm \
+  opus-devel \
+  libvpx-devel \
+  x264-devel \
+  x265-devel \
+  libvorbis-devel \
+  lame-devel \
+  libass-devel \
+  openssl-devel
+```
+
+### Installing Dependencies Automatically
+
+Use the provided script to automatically install all required dependencies:
+
+```bash
+# Automatically install all missing dependencies
+sudo ./scripts/verify-deps.sh
+
+# Check what would be installed without actually installing
+./scripts/verify-deps.sh --dry-run
+
+# Only check if dependencies are installed (no installation)
+./scripts/verify-deps.sh --check-only
+
+# Force reinstall all dependencies
+sudo ./scripts/verify-deps.sh --force
+
+# Show detailed output during installation
+sudo ./scripts/verify-deps.sh --verbose
+```
+
+The script will:
+- ✅ Automatically detect your operating system (Ubuntu 22.04 or Rocky Linux 9)
+- ✅ Check which dependencies are already installed
+- ✅ Install only the missing dependencies
+- ✅ Verify the installation was successful
+- ✅ Test compilation if Rust is available
+
+Options:
+- `--help`: Show usage information
+- `--dry-run`: Show what would be installed without making changes
+- `--check-only`: Only check dependencies, don't install
+- `--force`: Force reinstall all dependencies
+- `--verbose`: Show detailed output
+- `--version`: Show script version
+
+Exit codes:
+- 0: All dependencies successfully installed or already present
+- 1: Some dependencies failed to install
+
 ## Requirements
 
 - Rust nightly (required for unstable features and edition 2024)
