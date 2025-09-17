@@ -35,7 +35,8 @@ struct TestServer {
 impl TestServer {
     /// Start the server in a subprocess
     async fn start() -> Self {
-        tracing_subscriber::fmt::init();
+        // Only open when debugging
+        // tracing_subscriber::fmt::init();
 
         // Find an available port
         let e_port = portpicker::pick_unused_port().expect("No available port");

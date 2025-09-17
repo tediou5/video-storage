@@ -53,10 +53,6 @@ These are the essential FFmpeg libraries that must be installed:
 - **libmp3lame-dev**: MP3 audio codec
   - Legacy but still widely used audio format
 
-- **libfdk-aac-dev**: AAC audio codec
-  - High-quality AAC encoder
-  - Common in MP4 containers
-
 ### Other Libraries
 
 - **libass-dev**: Subtitle rendering support
@@ -70,6 +66,7 @@ These are the essential FFmpeg libraries that must be installed:
 sudo apt-get update
 sudo apt-get install -y \
     # Core FFmpeg libraries
+    ffmpeg \
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \
@@ -89,9 +86,9 @@ sudo apt-get install -y \
     libopus-dev \
     libvorbis-dev \
     libmp3lame-dev \
-    libfdk-aac-dev \
     # Other
-    libass-dev
+    libass-dev \
+    libssl-dev
 ```
 
 ### Ubuntu/Debian (Minimal)
@@ -101,6 +98,7 @@ If you only need basic functionality:
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
+    ffmpeg \
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \
@@ -130,8 +128,7 @@ brew install \
     x264 \
     x265 \
     libvorbis \
-    lame \
-    fdk-aac
+    lame
 ```
 
 ### Fedora/RHEL/CentOS
@@ -144,9 +141,11 @@ sudo dnf install -y \
 
 # Install dependencies
 sudo dnf install -y \
+    gcc \
+    gcc-c++ \
+    make \
     ffmpeg-devel \
     clang \
-    pkg-config \
     nasm \
     opus-devel \
     libvpx-devel \
@@ -154,8 +153,8 @@ sudo dnf install -y \
     x265-devel \
     libvorbis-devel \
     lame-devel \
-    fdk-aac-devel \
-    libass-devel
+    libass-devel \
+    openssl-devel
 ```
 
 ### Alpine Linux
@@ -168,11 +167,11 @@ apk add --no-cache \
     nasm \
     opus-dev \
     libvpx-dev \
+    build-base \
     x264-dev \
     x265-dev \
     libvorbis-dev \
     lame-dev \
-    fdk-aac-dev \
     libass-dev
 ```
 
@@ -184,13 +183,14 @@ For a consistent build environment, you can use Docker:
 FROM rust:latest
 
 RUN apt-get update && apt-get install -y \
+    build-essential \
+    ffmpeg \
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \
     libswscale-dev \
     libavfilter-dev \
     libavdevice-dev \
-    libswresample-dev \
     clang \
     pkg-config \
     nasm \
@@ -200,8 +200,8 @@ RUN apt-get update && apt-get install -y \
     libx265-dev \
     libvorbis-dev \
     libmp3lame-dev \
-    libfdk-aac-dev \
     libass-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

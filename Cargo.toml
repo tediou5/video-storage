@@ -10,8 +10,12 @@ debug = []
 bytes = "1"
 ffmpeg-next = { version = "7.1.0", features = [
     "build",
-    "build-lib-opus",
+    "build-lib-ass",
     "build-lib-vpx",
+    "build-lib-opus",
+    "build-lib-x264",
+    "build-lib-x265",
+    "build-license-gpl",
 ] }
 ez-ffmpeg = { git = "https://github.com/YeautyYE/ez-ffmpeg.git", rev = "c1d3f6650a6468c07dcf6be62869702b4efdc663" }
 futures = "0.3"
