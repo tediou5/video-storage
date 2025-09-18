@@ -199,7 +199,7 @@ check_command() {
 # Check if a package is installed (Ubuntu)
 check_apt_package() {
     local pkg=$1
-    if dpkg -l | grep -q "^ii.*$pkg"; then
+    if dpkg -s "$pkg" >/dev/null 2>&1; then
         return 0
     else
         return 1
