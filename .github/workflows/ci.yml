@@ -52,9 +52,9 @@ jobs:
             - name: Install build essentials (Rocky Linux)
               if: matrix.pkg-manager == 'dnf'
               run: |
-                  dnf install -y epel-release
+                  dnf install -y git epel-release
                   dnf config-manager --set-enabled crb
-                  dnf install -y git gcc gcc-c++ make cmake pkgconfig
+                  dnf install -y gcc gcc-c++ make cmake pkgconfig
 
             # Install Rust
             - name: Install Rust

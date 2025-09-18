@@ -15,6 +15,7 @@ For detailed information about FFmpeg dependencies and troubleshooting, see [FFm
 ```bash
 sudo apt-get update && sudo apt-get install -y \
     build-essential \
+    git \
     ffmpeg \
     libavcodec-dev \
     libavformat-dev \
@@ -61,6 +62,7 @@ brew install ffmpeg --with-libvpx --with-opus
 sudo dnf install -y \
     gcc \
     gcc-c++ \
+    git \
     make \
     ffmpeg-devel \
     clang \

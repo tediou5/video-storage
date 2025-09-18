@@ -221,6 +221,7 @@ install_ubuntu_deps() {
     local packages=(
         build-essential
         gcc
+        git
         clang
         libavcodec-dev
         libavformat-dev
@@ -303,6 +304,7 @@ install_rocky_deps() {
     local required_packages=(
         gcc
         gcc-c++
+        git
         make
         ffmpeg-devel
         clang
