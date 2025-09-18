@@ -1,4 +1,7 @@
-use crate::{BANDWIDTHS, ConvertJob, JobGenerator, RESOLUTIONS};
+use crate::app_state::AppState;
+use crate::job::upload::UploadJob;
+use crate::job::{Action, CONVERT_KIND, FailureJob, Job, JobKind, RawJob};
+use crate::{BANDWIDTHS, RESOLUTIONS};
 use ez_ffmpeg::Frame;
 use ez_ffmpeg::container_info::get_duration_us;
 use ez_ffmpeg::filter::frame_filter::FrameFilter;
@@ -7,45 +10,121 @@ use ez_ffmpeg::filter::frame_pipeline_builder::FramePipelineBuilder;
 use ez_ffmpeg::{AVMediaType, Input};
 use ez_ffmpeg::{FfmpegContext, Output};
 use ffmpeg_next::{codec, format, media};
+use serde::{Deserialize, Serialize};
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::task::JoinHandle as TokioJoinHandle;
 use tracing::{debug, error, info, warn};
 
 /// HLS segment duration in seconds
 pub const HLS_SEGMENT_DURATION: u16 = 4;
 
-pub async fn spawn_hls_job(
-    JobGenerator { job, upload_path }: JobGenerator,
-    videos_dir: &Path,
-    temp_dir: &Path,
-) -> anyhow::Result<()> {
-    let temp_dir = temp_dir.join(format!("tmp-{}", job.id()));
-    let out_dir = videos_dir.join(job.id());
-    tokio::fs::create_dir_all(&temp_dir).await?;
-    let sanitized_input = format!("/tmp/{}.sanitized.mp4", job.id());
-    _ = std::fs::File::create(&sanitized_input).expect("Failed to create tmp sanitized file");
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ConvertJob {
+    pub id: String,
+    pub crf: u8, // 0-63
+}
 
-    let input_path = upload_path.clone();
-    tokio::task::spawn_blocking(move || {
-        remux_av_only(input_path.to_str().unwrap(), &sanitized_input)
-            .inspect_err(|error| error!(?input_path, ?error, "remuxing input failed"))?;
+impl ConvertJob {
+    pub fn new(id: String, crf: u8) -> Self {
+        Self { id, crf }
+    }
 
-        create_master_playlist(&job, &sanitized_input, &temp_dir)?;
-        // Remove existing directory if it exists
-        _ = std::fs::remove_dir_all(&out_dir);
-        _ = std::fs::remove_file(sanitized_input);
-        std::fs::rename(&temp_dir, &out_dir)?;
-        info!(
-            job_id = job.id(),
-            output_dir = ?out_dir.display(),
-            "HLS conversion completed successfully."
-        );
-        Ok::<(), anyhow::Error>(())
-    })
-    .await??;
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 
-    Ok(())
+    pub fn crf(&self) -> u8 {
+        self.crf
+    }
+
+    /// Generate the upload path from the state
+    pub fn upload_path(&self, state: &AppState) -> PathBuf {
+        state.uploads_dir().join(&self.id)
+    }
+}
+
+impl Job for ConvertJob {
+    fn kind(&self) -> JobKind {
+        CONVERT_KIND
+    }
+
+    fn need_permit(&self) -> bool {
+        true
+    }
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn gen_job(&self, state: AppState) -> TokioJoinHandle<anyhow::Result<()>> {
+        let job = self.clone();
+        let upload_path = self.upload_path(&state);
+        let videos_dir = state.videos_dir().to_path_buf();
+        let temp_dir = state.temp_dir().to_path_buf();
+
+        tokio::spawn(async move {
+            let temp_dir = temp_dir.join(format!("tmp-{}", job.id()));
+            let out_dir = videos_dir.join(job.id());
+            tokio::fs::create_dir_all(&temp_dir).await?;
+            let sanitized_input = format!("/tmp/{}-sanitized.mp4", job.id());
+            _ = std::fs::File::create(&sanitized_input)?;
+            let input_path = upload_path.clone();
+            tokio::task::spawn_blocking(move || {
+                remux_av_only(input_path.to_str().unwrap(), &sanitized_input)
+                    .inspect_err(|error| error!(?input_path, ?error, "remuxing input failed"))?;
+
+                create_master_playlist(&job, &sanitized_input, &temp_dir)?;
+                // Remove existing directory if it exists
+                _ = std::fs::remove_dir_all(&out_dir);
+                _ = std::fs::remove_file(sanitized_input);
+                std::fs::rename(&temp_dir, &out_dir)?;
+                // Cleanup original file
+                _ = std::fs::remove_file(&input_path);
+                info!(job_id = job.id(), "HLS conversion completed successfully");
+                Ok::<(), anyhow::Error>(())
+            })
+            .await??;
+
+            Ok(())
+        })
+    }
+
+    fn next_job(&self, state: AppState) -> Option<impl Job> {
+        if state.storage_manager.is_remote() {
+            let next = UploadJob::new(self.id.clone());
+
+            let next_c = next.clone();
+            let state_c = state.clone();
+            tokio::task::spawn(async move { state_c.jobs_manager.add(&next_c).await });
+            Some(RawJob::new(next))
+        } else {
+            None
+        }
+    }
+
+    fn wait_for_retry(&self) -> Option<Duration> {
+        Some(Duration::from_secs(15))
+    }
+
+    fn on_final_failure(&self) -> FailureJob {
+        FailureJob::new(
+            self.id.clone(),
+            self.kind(),
+            vec![
+                Action::Webhook {
+                    kind: self.kind(),
+                    message: "Convert job failed after all retries".to_string(),
+                },
+                Action::Cleanup {
+                    kind: self.kind(),
+                    job_id: self.id.clone(),
+                },
+            ],
+        )
+    }
 }
 
 /// Convert MP4 to a VP9 variant with specified scales.

@@ -1,22 +1,21 @@
-use crate::StorageManager;
 use crate::claim::ClaimManager;
 use crate::claim_bucket::ClaimBucketManager;
-use crate::{ConvertJob, JobGenerator, StreamMap, UploadJob};
+use crate::job::manager::JobSetManager;
+use crate::job::raw::RawJob;
+use crate::job::{Job, JobResult};
+use crate::{StorageManager, StreamMap};
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde_json::json;
-use std::collections::BTreeSet;
 use std::io::ErrorKind as StdIoErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Mutex as TokioMutex, Semaphore};
+use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
 const TEMP_DIR: &str = "temp";
 const UPLOADS_DIR: &str = "uploads";
 const VIDEOS_DIR: &str = "videos";
-const JOB_FILE: &str = "pending-jobs.json";
-const UPLOAD_JOB_FILE: &str = "pending-uploads.json";
 pub const VIDEO_OBJECTS_DIR: &str = "video-objects";
 
 async fn init_workspace(workspace: &Path) -> std::io::Result<()> {
@@ -26,59 +25,18 @@ async fn init_workspace(workspace: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug)]
-pub enum Job {
-    Convert(JobGenerator),
-    Upload(UploadJob),
-}
-
-type JobKind = &'static str;
-impl Job {
-    const KIND_CONVERT: JobKind = "convert-job";
-    const KIND_UPLOAD: JobKind = "upload-job";
-
-    fn id(&self) -> &str {
-        match self {
-            Job::Convert(job) => job.id(),
-            Job::Upload(job) => job.id(),
-        }
-    }
-
-    fn kind(&self) -> JobKind {
-        match self {
-            Job::Convert(_) => Self::KIND_CONVERT,
-            Job::Upload(_) => Self::KIND_UPLOAD,
-        }
-    }
-}
-
-impl From<JobGenerator> for Job {
-    fn from(job: JobGenerator) -> Self {
-        Job::Convert(job)
-    }
-}
-
-impl From<UploadJob> for Job {
-    fn from(job: UploadJob) -> Self {
-        Job::Upload(job)
-    }
-}
-
 #[derive(Clone)]
 pub struct AppState {
-    pub job_set: Arc<TokioMutex<BTreeSet<ConvertJob>>>,
-    pub upload_job_set: Arc<TokioMutex<BTreeSet<UploadJob>>>,
-    pub job_tx: UnboundedSender<Job>,
+    pub job_tx: UnboundedSender<RawJob>,
+    pub jobs_manager: JobSetManager,
     pub storage_manager: Arc<StorageManager>,
-    pub webhook_url: Option<String>,
     pub claim_manager: Arc<ClaimManager>,
     pub claim_bucket_manager: Arc<ClaimBucketManager>,
 
     pub temp_dir: PathBuf,
     pub videos_dir: PathBuf,
     pub uploads_dir: PathBuf,
-    pub pending_jobs_path: PathBuf,
-    pub pending_uploads_path: PathBuf,
+    pub webhook_url: Option<String>,
 }
 
 impl AppState {
@@ -89,9 +47,11 @@ impl AppState {
         storage_manager: StorageManager,
         webhook_url: Option<String>,
         claim_keys: Vec<(u8, [u8; 32])>,
-    ) -> std::io::Result<Self> {
+    ) -> anyhow::Result<Self> {
         init_workspace(workspace).await?;
         let (tx, rx) = unbounded();
+
+        let jobs_manager = JobSetManager::new(workspace, &tx)?;
 
         // Initialize claim managers
         let claim_manager = Arc::new(
@@ -101,19 +61,16 @@ impl AppState {
         let claim_bucket_manager = Arc::new(ClaimBucketManager::new(token_rate));
 
         let this = Self {
-            job_set: Arc::default(),
-            upload_job_set: Arc::default(),
             job_tx: tx,
+            jobs_manager,
             storage_manager: Arc::new(storage_manager),
-            webhook_url,
             claim_manager,
             claim_bucket_manager,
 
             temp_dir: workspace.join(TEMP_DIR),
             uploads_dir: workspace.join(UPLOADS_DIR),
             videos_dir: workspace.join(VIDEOS_DIR),
-            pending_jobs_path: workspace.join(JOB_FILE),
-            pending_uploads_path: workspace.join(UPLOAD_JOB_FILE),
+            webhook_url,
         };
 
         this.handle_jobs(rx, permits);
@@ -132,15 +89,7 @@ impl AppState {
         self.videos_dir.as_path()
     }
 
-    pub fn pending_jobs_path(&self) -> &Path {
-        self.pending_jobs_path.as_path()
-    }
-
-    pub fn pending_uploads_path(&self) -> &Path {
-        self.pending_uploads_path.as_path()
-    }
-
-    async fn call_webhook(&self, job_id: &str, job_type: &str, status: &str) {
+    pub async fn call_webhook(&self, job_id: &str, job_type: &str, status: &str) {
         if let Some(webhook_url) = &self.webhook_url {
             let payload = json!({
                 "job_id": job_id,
@@ -176,145 +125,66 @@ impl AppState {
         }
     }
 
-    fn handle_jobs(&self, rx: UnboundedReceiver<Job>, permits: usize) {
+    fn handle_jobs(&self, rx: UnboundedReceiver<RawJob>, permits: usize) {
         info!(permits, "Job handler started");
         let this = self.clone();
         let semaphore = Arc::new(Semaphore::new(permits));
-        let upload_semaphore = Arc::new(Semaphore::new(permits));
 
         tokio::spawn(async move {
-            debug!("Job handler started #1");
+            debug!("Job handler started with RawJob system");
             let rx = std::pin::pin!(rx);
             let mut rx = rx.fuse();
 
-            let mut jobs: StreamMap<'_, String, Result<JobKind, Job>> = StreamMap::default();
+            let mut jobs: StreamMap<'_, String, Result<JobResult<RawJob>, RawJob>> =
+                StreamMap::default();
+
             loop {
                 debug!("Waiting for job");
                 futures::select! {
                     maybe_job = rx.next() => {
-                        debug!(is_some = maybe_job.is_some() ,"Job received");
+                        debug!(is_some = maybe_job.is_some(), "Job received");
                         let Some(job) = maybe_job else {
                             error!("Job handler finished");
                             break;
                         };
 
-                        match job {
-                            Job::Convert(generator) => {
-                                let job = generator.job.clone();
-                                let id = generator.id().to_string();
-                                let this_c = this.clone();
-                                let semaphore_c = semaphore.clone();
-                                let task = async move {
-                                    debug!(id = %generator.id(), "Job wait for permit");
-
-                                    let _permit = semaphore_c.acquire().await.unwrap();
-                                    info!(id = %generator.id(), "Job started");
-
-                                    let result = generator.gen_task(this_c).await;
-                                    let result = result.expect("Tokio task Join failed").map_err(|error| {
-                                        error!(%error, id = %generator.id(), "Job process failed, retry later");
-                                        Job::Convert(generator)
-                                    }).map(|_| Job::KIND_CONVERT);
-
-                                    if result.is_err() {
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
-                                    }
-
-                                    result
-                                };
-                                if !jobs.add_if_not_in_progress(id.clone(), Box::pin(task)) {
-                                    warn!("Job {id} already in-progress, skipping");
-                                    continue;
-                                }
-                                info!(id, "Job added to job set");
-                                this.job_set.lock().await.insert(job);
-                                let dump = serde_json::to_string(&*this.job_set.lock().await).unwrap();
-                                // update jobs file
-                                _ = tokio::fs::write(this.pending_jobs_path(), dump).await;
-                            },
-                            Job::Upload(upload_job) => {
-                                let id = upload_job.id().to_string();
-                                let this_c = this.clone();
-                                let semaphore_c = upload_semaphore.clone();
-                                let upload_job_clone = upload_job.clone();
-
-                                let task = async move {
-                                    debug!(id = %upload_job.id(), "Upload job wait for permit");
-
-                                    let _permit = semaphore_c.acquire().await.unwrap();
-                                    info!(id = %upload_job.id(), "Upload job started");
-
-                                    let result = this_c.storage_manager
-                                        .upload_directory(upload_job.path(this_c.videos_dir()), "videos")
-                                        .await
-                                        .map_err(|error| {
-                                            error!(%error, id = %upload_job.id(), "Upload failed, retry later");
-                                            Job::Upload(upload_job)
-                                        })
-                                        .map(|_| Job::KIND_UPLOAD);
-
-                                    if result.is_err() {
-                                        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                                    }
-
-                                    result
-                                };
-
-                                if !jobs.add_if_not_in_progress(id.clone(), Box::pin(task)) {
-                                    warn!("Upload job {id} already in-progress, skipping");
-                                    continue;
-                                }
-                                info!(id, "Upload job added to job set");
-                                this.upload_job_set.lock().await.insert(upload_job_clone);
-                                let dump = serde_json::to_string(&*this.upload_job_set.lock().await).unwrap();
-                                // update uploads file
-                                _ = tokio::fs::write(this.pending_uploads_path(), dump).await;
-                            },
+                        let job_id = job.id().to_string();
+                        let kind = job.kind();
+                        let task = job.gen_task(this.clone(), semaphore.clone()).await;
+                        let task = async {
+                            task
+                                .map(|maybe_failed| maybe_failed.map(|maybe_done| maybe_done.map(RawJob::new)))
+                                .map_err(RawJob::new)
+                        };
+                        if !jobs.add_if_not_in_progress(job_id.clone(), Box::pin(task)) {
+                            warn!("Job {job_id} already in-progress, skipping");
+                            continue;
                         }
+
+                        info!(job_id, kind, "Job added to processing queue");
                     }
                     (id, result) = jobs.select_next_some() => {
                         match result {
-                            Ok(job_kind) if job_kind == Job::KIND_CONVERT => {
-                                    info!("Convert Job {id} completed successfully");
-                                    // update job status
-                                    let mut js = this.job_set.lock().await;
-                                    js.retain(|job| job.id() != id);
-                                    let dump = serde_json::to_string(&*js).unwrap();
-                                    // update jobs file
-                                    _ = tokio::fs::write(this.pending_jobs_path(), dump).await;
+                            Ok(Ok(next_job)) => {
+                                // remove finished job first
+                                let Some(job) = next_job else {
+                                    info!(id, "Job completed successfully");
+                                    continue;
+                                };
 
-                                    // Create upload job if using remote storage
-                                    if this.storage_manager.is_remote() {
-                                        let upload_job = UploadJob {
-                                            id: id.clone(),
-                                        };
-                                        info!(id, "Creating upload job for remote storage");
-                                        _ = this.job_tx.unbounded_send(upload_job.into());
-                                    } else {
-                                        this.call_webhook(&id, "convert", "completed").await;
-                                    }
-                                    _ = tokio::fs::remove_file(this.uploads_dir().join(&id)).await;
-
-                                    // NO NEED
-                                    // this.call_webhook(&id, "convert", "completed").await;
-                            },
-                            Ok(job_kind) if job_kind == Job::KIND_UPLOAD => {
-                                info!("Upload Job {id} completed successfully");
-                                // update upload job status
-                                let mut ujs = this.upload_job_set.lock().await;
-                                ujs.retain(|job| job.id() != id);
-                                let dump = serde_json::to_string(&*ujs).unwrap();
-                                // update uploads file
-                                _ = tokio::fs::write(this.pending_uploads_path(), dump).await;
-                                // Call webhook after successful upload
-                                this.call_webhook(&id, "upload", "completed").await;
-                                _ = tokio::fs::remove_dir_all(this.videos_dir.join(&id)).await;
-                            },
-                            Err(job) => {
-                                warn!(job_id=%job.id(), job_kind=%job.kind(), "Retry job");
+                                let kind = job.kind();
+                                info!(job_id = id, kind = kind, "NextJob added to processing queue");
                                 _ = this.job_tx.unbounded_send(job);
                             },
-                            _ => {}
+                            Ok(Err(failure_job)) => {
+                                info!("Job {id} completed with failure handling");
+                                this.jobs_manager.remove(&id).await;
+                                _ = this.job_tx.unbounded_send(RawJob::new(failure_job));
+                            },
+                            Err(retry_job) => {
+                                warn!(job_id = %retry_job.id(), "Retrying job");
+                                _ = this.job_tx.unbounded_send(retry_job);
+                            }
                         }
                     }
                 }

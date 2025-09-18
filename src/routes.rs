@@ -1,6 +1,7 @@
 use crate::app_state::VIDEO_OBJECTS_DIR;
 use crate::claim::{ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
-use crate::{AppState, ConvertJob, TokenBucket};
+use crate::job::{CONVERT_KIND, UPLOAD_KIND};
+use crate::{AppState, ConvertJob, Job, TokenBucket};
 use axum::body::Body;
 use axum::extract::{Extension, Path as AxumPath, Query};
 use axum::http::{Request, Response, StatusCode, header};
@@ -37,8 +38,12 @@ pub struct WaitlistResponse {
 
 #[axum::debug_handler]
 pub async fn waitlist(Extension(state): Extension<AppState>) -> impl IntoResponse {
-    let convert_jobs = state.job_set.lock().await.len();
-    let upload_jobs = state.upload_job_set.lock().await.len();
+    let jobs_guard = state.jobs_manager.jobs.lock().await;
+    let jobs = jobs_guard.iter().map(Job::kind).collect::<Vec<_>>();
+    drop(jobs_guard);
+
+    let convert_jobs = jobs.iter().filter(|&&kind| kind == CONVERT_KIND).count();
+    let upload_jobs = jobs.iter().filter(|&&kind| kind == UPLOAD_KIND).count();
 
     (
         StatusCode::OK,
@@ -67,7 +72,14 @@ pub async fn upload_mp4_raw(
         );
     }
 
-    if state.job_set.lock().await.contains(&job) {
+    if state
+        .jobs_manager
+        .jobs
+        .lock()
+        .await
+        .iter()
+        .any(|j| j.id() == job.id())
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(UploadResponse {
@@ -124,8 +136,8 @@ pub async fn upload_mp4_raw(
         }
     }
 
-    let generator = crate::JobGenerator::new(job, upload_path);
-    _ = state.job_tx.unbounded_send(generator.into());
+    state.jobs_manager.add(&job).await;
+    _ = state.job_tx.unbounded_send(job.into());
 
     (
         StatusCode::ACCEPTED,
