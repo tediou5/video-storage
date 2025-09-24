@@ -142,8 +142,6 @@ pub enum Action {
 
 impl Action {
     async fn execute_action(action: Action, state: &AppState, job_id: &str, kind: JobKind) {
-        // remove job from JobsManager
-        state.jobs_manager.remove(job_id).await;
         match action {
             Action::Silent => {
                 debug!(job_id, "Silent handling failed");
@@ -186,6 +184,7 @@ impl FailureJob {
     }
 
     pub async fn execute_actions(self, state: &AppState) {
+        state.jobs_manager.remove(&self.job_id).await;
         for action in self.actions {
             Action::execute_action(action, state, &self.job_id, self.kind).await;
         }
