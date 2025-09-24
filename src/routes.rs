@@ -1,4 +1,3 @@
-use crate::app_state::VIDEO_OBJECTS_DIR;
 use crate::claim::{ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
 use crate::job::{CONVERT_KIND, UPLOAD_KIND};
 use crate::{AppState, ConvertJob, Job, TokenBucket};
@@ -12,14 +11,10 @@ use mime_guess::from_path;
 use opendal::Operator;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
-use std::future::Future;
 use std::io::Error as IoError;
 use std::path::PathBuf;
-
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::fs::create_dir_all;
 use tokio::io::AsyncSeekExt;
-
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, warn};
 
@@ -34,6 +29,16 @@ pub struct WaitlistResponse {
     pub pending_convert_jobs: usize,
     pub pending_upload_jobs: usize,
     pub total_pending_jobs: usize,
+}
+
+/// Validate job ID with basic rules
+fn is_valid_job_id(job_id: &str) -> bool {
+    !job_id.is_empty()
+        && !job_id.contains('/')
+        && !job_id.contains('-')
+        && !job_id.contains('.')
+        && !job_id.contains(' ')
+        && job_id.len() <= 128
 }
 
 #[axum::debug_handler]
@@ -72,6 +77,16 @@ pub async fn upload_mp4_raw(
         );
     }
 
+    if !is_valid_job_id(&job_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(UploadResponse {
+                job_id,
+                message: "Invalid job ID format".into(),
+            }),
+        );
+    }
+
     if state
         .jobs_manager
         .jobs
@@ -89,31 +104,16 @@ pub async fn upload_mp4_raw(
         );
     }
 
-    if job_id.is_empty()
-        || job_id.contains('/')
-        || job_id.contains('-')
-        || job_id.contains('.')
-        || job_id.contains(' ')
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(UploadResponse {
-                job_id,
-                message: "Invalid filename, Cannot contain '/', '-', ' ' and '.'".into(),
-            }),
-        );
-    }
-
     info!(%job_id, "Uploading file");
 
     let upload_path = state.uploads_dir().join(&job_id);
     let Ok(mut file) = tokio::fs::File::create(&upload_path).await else {
-        error!(%job_id, "Failed to create upload job file");
+        error!(%job_id, "Failed to create upload file");
         return (
-            StatusCode::BAD_REQUEST,
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(UploadResponse {
                 job_id,
-                message: "Failed to create upload job file".into(),
+                message: "Failed to create upload file".into(),
             }),
         );
     };
@@ -122,18 +122,29 @@ pub async fn upload_mp4_raw(
     let mut body_stream = body.into_data_stream();
     while let Some(Ok(chunk)) = body_stream.next().await {
         if file.write_all(&chunk).await.is_err() {
-            // clean up upload job file
-            error!(%job_id, "Failed to write to upload job file");
+            error!(%job_id, "Failed to write to upload file");
             let _ = tokio::fs::remove_file(&upload_path).await;
 
             return (
-                StatusCode::BAD_REQUEST,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 Json(UploadResponse {
                     job_id,
-                    message: "Failed to write to upload job file".into(),
+                    message: "Failed to write to upload file".into(),
                 }),
             );
         }
+    }
+
+    if file.flush().await.is_err() {
+        error!(%job_id, "Failed to flush upload file");
+        let _ = tokio::fs::remove_file(&upload_path).await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(UploadResponse {
+                job_id,
+                message: "Failed to flush upload file".into(),
+            }),
+        );
     }
 
     state.jobs_manager.add(&job).await;
@@ -259,121 +270,6 @@ fn parse_range(req: &Request<Body>, file_size: u64) -> (StatusCode, u64, u64) {
     }
 
     (StatusCode::OK, 0, file_size - 1)
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct UploadFilesRequest {
-    id: String,
-    name: String,
-}
-
-#[axum::debug_handler]
-pub async fn upload_files(
-    Extension(state): Extension<AppState>,
-    Query(UploadFilesRequest { id: job_id, name }): Query<UploadFilesRequest>,
-    body: Body,
-) -> impl IntoResponse {
-    if job_id.is_empty()
-        || job_id.contains('/')
-        || job_id.contains('-')
-        || job_id.contains('.')
-        || job_id.contains(' ')
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(UploadResponse {
-                job_id,
-                message: "Invalid id, Cannot contain '/', '-', ' ' and '.'".into(),
-            }),
-        );
-    }
-
-    if name.is_empty() || name.contains('/') || name.contains(' ') {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(UploadResponse {
-                job_id,
-                message: "Invalid object name, Cannot contain '/' and ' '".into(),
-            }),
-        );
-    }
-
-    info!(%job_id, name, "Uploading video objects file");
-    let upload_dir = state.videos_dir().join(&job_id).join(VIDEO_OBJECTS_DIR);
-    create_dir_all(&upload_dir).await.unwrap();
-
-    let upload_path = upload_dir.join(&name);
-    let Ok(mut file) = tokio::fs::File::create(&upload_path).await else {
-        error!(%job_id, %name, "Failed to create upload job object file");
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(UploadResponse {
-                job_id,
-                message: "Failed to create upload job object file".into(),
-            }),
-        );
-    };
-
-    use tokio::io::AsyncWriteExt as _;
-    let mut body_stream = body.into_data_stream();
-    while let Some(Ok(chunk)) = body_stream.next().await {
-        if file.write_all(&chunk).await.is_err() {
-            // clean up upload job object file
-            error!(%job_id, %name, "Failed to write to upload job object file");
-            let _ = tokio::fs::remove_file(&upload_path).await;
-
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(UploadResponse {
-                    job_id,
-                    message: "Failed to write to upload job object file".into(),
-                }),
-            );
-        }
-    }
-
-    // Upload to S3 if remote storage is configured
-    if state.storage_manager.is_remote() {
-        let s3_key = format!("videos/{}/{}/{}", job_id, VIDEO_OBJECTS_DIR, name);
-        debug!(%s3_key, "Uploading video object to S3");
-
-        if let Err(e) = state
-            .storage_manager
-            .operator()
-            .write(&s3_key, tokio::fs::read(&upload_path).await.unwrap())
-            .await
-        {
-            error!(%job_id, %name, ?e, "Failed to upload video object to S3");
-        } else {
-            info!(%job_id, %name, "Video object uploaded to S3 successfully");
-        }
-    }
-
-    (
-        StatusCode::OK,
-        Json(UploadResponse {
-            job_id,
-            message: "Upload object done".into(),
-        }),
-    )
-}
-
-pub fn serve_video_object(
-    Extension(state): Extension<AppState>,
-    Extension(bucket): Extension<TokenBucket>,
-    AxumPath((job_id, filename)): AxumPath<(String, String)>,
-    req: Request<Body>,
-) -> impl Future<Output = Result<Response<Body>, Infallible>> {
-    // First, try to get file size from local filesystem
-    let local_path = state
-        .videos_dir()
-        .join(&job_id)
-        .join(VIDEO_OBJECTS_DIR)
-        .join(&filename);
-    let s3_key = format!("videos/{job_id}/{VIDEO_OBJECTS_DIR}/{filename}");
-    debug!(%job_id, %filename, ?local_path, ?s3_key, "Request server video object file");
-
-    server_file_with_bucket(state, local_path, s3_key, filename, req, bucket)
 }
 
 async fn server_file_with_bucket(
@@ -525,4 +421,24 @@ pub(crate) fn err_response(status: StatusCode, body_str: &'static str) -> Respon
         .status(status)
         .body(Body::from(body_str))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_valid_job_id() {
+        assert!(is_valid_job_id("test123"));
+        assert!(is_valid_job_id("job"));
+        assert!(is_valid_job_id("ABC123def"));
+
+        // Invalid cases
+        assert!(!is_valid_job_id(""));
+        assert!(!is_valid_job_id("test/job"));
+        assert!(!is_valid_job_id("test-job"));
+        assert!(!is_valid_job_id("test.job"));
+        assert!(!is_valid_job_id("test job"));
+        assert!(!is_valid_job_id(&"a".repeat(129))); // too long
+    }
 }

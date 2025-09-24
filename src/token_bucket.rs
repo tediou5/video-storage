@@ -86,75 +86,87 @@ impl TokenBucket {
         }
     }
 
-    /// Try to consume tokens atomically
+    /// Try to consume tokens atomically using proper CAS loop
     ///
     /// Returns Ok(()) if successful, Err(wait_ms) if need to wait
     fn try_consume_atomic(&self, amount_micro: u64, now_ms: u64) -> Result<(), u64> {
-        // Load current values
-        let mut current_tokens = self.inner.tokens_micro.load(Ordering::Relaxed);
-        let last_ms = self.inner.last_refill_ms.load(Ordering::Relaxed);
-        let refill_rate_micro = self.inner.refill_rate_micro.load(Ordering::Relaxed);
+        let refill_rate_micro = self.inner.refill_rate_micro.load(Ordering::Acquire);
+        let last_ms = self.inner.last_refill_ms.load(Ordering::Acquire);
 
-        // Calculate elapsed time and new tokens
+        // Calculate elapsed time and potential new tokens
         let elapsed_ms = now_ms.saturating_sub(last_ms);
-        let new_tokens_micro = if elapsed_ms > 0 {
-            // Calculate new tokens: (elapsed_ms * refill_rate_micro) / 1000
-            // To avoid overflow, we do the division first if needed
-            if elapsed_ms > 1_000_000 {
-                // For very large elapsed times, divide first to avoid overflow
-                (elapsed_ms / 1000) * refill_rate_micro
-            } else {
-                (elapsed_ms * refill_rate_micro) / 1000
+        let new_tokens_micro = self.calculate_new_tokens(elapsed_ms, refill_rate_micro);
+
+        // Use CAS loop for atomic updates
+        let mut retries = 0;
+        loop {
+            if retries > 10 {
+                // Too many retries, back off
+                return Err(1);
             }
-        } else {
-            0
-        };
 
-        // Add new tokens to current tokens
-        current_tokens = current_tokens.saturating_add(new_tokens_micro);
+            let current_tokens = self.inner.tokens_micro.load(Ordering::Acquire);
+            let updated_tokens = current_tokens.saturating_add(new_tokens_micro);
 
-        // Check if we have enough tokens
-        if current_tokens >= amount_micro {
-            // Try to update tokens atomically
-            let new_tokens = current_tokens - amount_micro;
+            // Check if we have enough tokens
+            if updated_tokens < amount_micro {
+                // Not enough tokens, calculate wait time
+                let needed_micro = amount_micro - updated_tokens;
+                let wait_ms = if refill_rate_micro > 0 {
+                    ((needed_micro * 1000) / refill_rate_micro).max(1)
+                } else {
+                    1000 // Wait 1 second if no refill rate
+                };
 
-            // Use compare_exchange to ensure atomic update
-            match self.inner.tokens_micro.compare_exchange(
-                self.inner.tokens_micro.load(Ordering::Relaxed),
-                new_tokens,
-                Ordering::Relaxed,
+                // Best effort update of tokens and timestamp for next calculation
+                let _ = self.inner.tokens_micro.compare_exchange_weak(
+                    current_tokens,
+                    updated_tokens,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                );
+                self.inner.last_refill_ms.store(now_ms, Ordering::Release);
+
+                return Err(wait_ms);
+            }
+
+            // Try to consume tokens
+            let final_tokens = updated_tokens - amount_micro;
+
+            // Use compare_exchange_weak for better performance in loops
+            match self.inner.tokens_micro.compare_exchange_weak(
+                current_tokens,
+                final_tokens,
+                Ordering::Release,
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    // Update last refill time
-                    self.inner.last_refill_ms.store(now_ms, Ordering::Relaxed);
-                    Ok(())
+                    // Successfully consumed tokens, update timestamp
+                    self.inner.last_refill_ms.store(now_ms, Ordering::Release);
+                    return Ok(());
                 }
                 Err(_) => {
                     // Another thread modified tokens, retry
-                    Err(0)
+                    retries += 1;
+                    std::hint::spin_loop();
+                    continue;
                 }
             }
+        }
+    }
+
+    /// Calculate new tokens to add based on elapsed time and refill rate
+    fn calculate_new_tokens(&self, elapsed_ms: u64, refill_rate_micro: u64) -> u64 {
+        if elapsed_ms == 0 || refill_rate_micro == 0 {
+            return 0;
+        }
+
+        // Calculate new tokens: (elapsed_ms * refill_rate_micro) / 1000
+        // Handle overflow by dividing first for very large elapsed times
+        if elapsed_ms > 1_000_000 {
+            (elapsed_ms / 1000) * refill_rate_micro
         } else {
-            // Not enough tokens, calculate wait time
-            let needed_micro = amount_micro - current_tokens;
-
-            // Calculate wait time in milliseconds
-            // wait_ms = (needed_micro * 1000) / refill_rate_micro
-            let wait_ms = if refill_rate_micro > 0 {
-                ((needed_micro * 1000) / refill_rate_micro).max(1)
-            } else {
-                // If refill rate is 0, we can't wait for tokens
-                1000 // Wait 1 second and retry
-            };
-
-            // Update tokens with what we calculated (best effort)
-            self.inner
-                .tokens_micro
-                .store(current_tokens, Ordering::Relaxed);
-            self.inner.last_refill_ms.store(now_ms, Ordering::Relaxed);
-
-            Err(wait_ms)
+            (elapsed_ms * refill_rate_micro) / 1000
         }
     }
 

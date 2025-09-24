@@ -16,7 +16,6 @@ use tracing::{debug, error, info, warn};
 const TEMP_DIR: &str = "temp";
 const UPLOADS_DIR: &str = "uploads";
 const VIDEOS_DIR: &str = "videos";
-pub const VIDEO_OBJECTS_DIR: &str = "video-objects";
 
 async fn init_workspace(workspace: &Path) -> std::io::Result<()> {
     tokio::fs::create_dir_all(workspace.join(TEMP_DIR)).await?;

@@ -2,7 +2,6 @@
 #![feature(atomic_try_update, lazy_type_alias)]
 
 pub mod app_state;
-pub mod bucket;
 pub mod claim;
 pub mod claim_bucket;
 pub mod claim_middleware;
@@ -39,9 +38,7 @@ pub use claim_middleware::{ClaimState, claim_auth_middleware};
 pub use config::Config;
 pub use job::{ConvertJob, Job, JobResult, UploadJob};
 pub use opendal::{StorageBackend, StorageConfig, StorageManager};
-pub use routes::{
-    create_claim, serve_video, serve_video_object, upload_files, upload_mp4_raw, waitlist,
-};
+pub use routes::{create_claim, serve_video, upload_mp4_raw, waitlist};
 pub use stream_map::StreamMap;
 pub use token_bucket::TokenBucket;
 
@@ -135,8 +132,6 @@ pub async fn run(config: Config) {
     let internal_app = Router::new()
         .route("/claims", post(create_claim))
         .route("/upload", post(upload_mp4_raw))
-        .route("/upload-objects", post(upload_files))
-        .route("/objects/{job_id}/{filename}", get(serve_video_object))
         .route("/waitlist", get(waitlist))
         .layer(axum::middleware::from_fn(middleware::log_request_errors))
         .layer(cors)
