@@ -1,25 +1,19 @@
-#![feature(atomic_try_update)]
+#![allow(incomplete_features)]
+#![feature(atomic_try_update, lazy_type_alias)]
 
+pub mod api;
 pub mod app_state;
-pub mod bucket;
 pub mod claim;
-pub mod claim_bucket;
-pub mod claim_middleware;
 pub mod config;
 pub mod job;
-pub mod middleware;
 pub mod opendal;
-pub mod routes;
 pub mod stream_map;
-pub mod token_bucket;
-pub mod utils;
 
 use axum::{
     Router,
     extract::Extension,
     routing::{get, post},
 };
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::net::TcpListener;
@@ -30,22 +24,19 @@ use tracing::info;
 //
 // Re-export
 //
+pub use api::{
+    TokenBucket, create_claim, log_request_errors, serve_video, upload_mp4_raw, waitlist,
+};
 pub use app_state::AppState;
 pub use claim::{
-    ClaimManager, ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse, HLS_SEGMENT_DURATION,
+    ClaimBucketManager, ClaimManager, ClaimPayloadV1, ClaimState, CreateClaimRequest,
+    CreateClaimResponse, HLS_SEGMENT_DURATION, claim_auth_middleware,
     validate_claim_time_and_resource,
 };
-pub use claim_bucket::ClaimBucketManager;
-pub use claim_middleware::{ClaimState, claim_auth_middleware};
 pub use config::Config;
-pub use job::{ConvertJob, JobGenerator, UploadJob};
+pub use job::{ConvertJob, Job, JobResult, UploadJob};
 pub use opendal::{StorageBackend, StorageConfig, StorageManager};
-pub use routes::{
-    create_claim, serve_video, serve_video_object, upload_files, upload_mp4_raw, waitlist,
-};
 pub use stream_map::StreamMap;
-pub use token_bucket::TokenBucket;
-pub use utils::spawn_hls_job;
 
 pub const RESOLUTIONS: [(u32, u32); 3] = [(720, 1280), (540, 960), (480, 854)];
 pub const BANDWIDTHS: [u32; 3] = [2500000, 1500000, 1000000];
@@ -110,41 +101,6 @@ pub async fn run(config: Config) {
     .await
     .expect("Failed to create app state");
 
-    // load pending jobs from file
-    let json = tokio::fs::read_to_string(state.pending_jobs_path())
-        .await
-        .unwrap_or_else(|error| {
-            info!(%error, "No jobs file, creating new one");
-            _ = std::fs::File::create(state.pending_jobs_path())
-                .expect("Failed to create jobs file");
-            String::new()
-        });
-
-    let pending = serde_json::from_str::<BTreeSet<ConvertJob>>(&json).unwrap_or_default();
-    for job in pending {
-        info!(job_id = %job.id(), "Loading pending job");
-        let upload_path = state.uploads_dir().join(job.id());
-        let generator = JobGenerator::new(job, upload_path);
-        _ = state.job_tx.unbounded_send(generator.into());
-    }
-
-    // load pending upload jobs from file
-    let upload_json = tokio::fs::read_to_string(state.pending_uploads_path())
-        .await
-        .unwrap_or_else(|error| {
-            info!(%error, "No upload jobs file, creating new one");
-            _ = std::fs::File::create(state.pending_uploads_path())
-                .expect("Failed to create upload jobs file");
-            String::new()
-        });
-
-    let pending_uploads =
-        serde_json::from_str::<BTreeSet<UploadJob>>(&upload_json).unwrap_or_default();
-    for upload_job in pending_uploads {
-        info!(job_id = %upload_job.id(), "Loading pending upload job");
-        _ = state.job_tx.unbounded_send(upload_job.into());
-    }
-
     // CORS layer
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -152,7 +108,7 @@ pub async fn run(config: Config) {
         .allow_headers(Any);
 
     // Create claim state for middleware
-    let claim_state = claim_middleware::ClaimState {
+    let claim_state = claim::ClaimState {
         claim_manager: state.claim_manager.clone(),
         bucket_manager: state.claim_bucket_manager.clone(),
     };
@@ -162,9 +118,9 @@ pub async fn run(config: Config) {
         .route("/videos/{*filename}", get(serve_video))
         .route_layer(axum::middleware::from_fn_with_state(
             claim_state,
-            claim_middleware::claim_auth_middleware,
+            claim::claim_auth_middleware,
         ))
-        .layer(axum::middleware::from_fn(middleware::log_request_errors))
+        .layer(axum::middleware::from_fn(api::log_request_errors))
         .layer(cors.clone())
         .layer(Extension(state.clone()));
 
@@ -172,10 +128,8 @@ pub async fn run(config: Config) {
     let internal_app = Router::new()
         .route("/claims", post(create_claim))
         .route("/upload", post(upload_mp4_raw))
-        .route("/upload-objects", post(upload_files))
-        .route("/objects/{job_id}/{filename}", get(serve_video_object))
         .route("/waitlist", get(waitlist))
-        .layer(axum::middleware::from_fn(middleware::log_request_errors))
+        .layer(axum::middleware::from_fn(api::log_request_errors))
         .layer(cors)
         .layer(Extension(state));
 

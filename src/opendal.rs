@@ -66,7 +66,7 @@ impl StorageManager {
         matches!(self.config.backend, StorageBackend::S3 { .. })
     }
 
-    pub async fn upload_directory(&self, local_path: PathBuf, remote_prefix: &str) -> Result<()> {
+    pub async fn upload_directory(&self, local_path: &Path, remote_prefix: &str) -> Result<()> {
         if !self.is_remote() {
             // For local storage, no upload needed
             info!("Using local storage, skipping upload");
@@ -169,7 +169,7 @@ fn to_s3_key(local_root: &Path, file: &Path, prefix: &str) -> Result<String> {
 
 pub async fn upload_tree_streaming(
     op: Operator,
-    local_root: PathBuf,
+    local_root: &Path,
     prefix: &str,
     concurrency: usize,
 ) -> Result<()> {
@@ -184,10 +184,10 @@ pub async fn upload_tree_streaming(
     let success_count_clone = success_count.clone();
     let error_count_clone = error_count.clone();
 
-    walk_files_stream(local_root.clone())
+    walk_files_stream(local_root.to_path_buf())
         .for_each_concurrent(concurrency, move |rpath| {
             let op = op.clone();
-            let root = local_root.clone();
+            let root = local_root.to_path_buf();
             let prefix = prefix.clone();
             let success_count = success_count_clone.clone();
             let error_count = error_count_clone.clone();

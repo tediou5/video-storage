@@ -1,6 +1,6 @@
-use crate::claim::{ClaimManager, validate_claim_time_and_resource};
-use crate::claim_bucket::ClaimBucketManager;
-use crate::routes::err_response;
+use crate::api::routes::err_response;
+use crate::claim::bucket::ClaimBucketManager;
+use crate::claim::manager::{ClaimManager, validate_claim_time_and_resource};
 use axum::{
     extract::{Path, Request, State},
     http::{StatusCode, header},
