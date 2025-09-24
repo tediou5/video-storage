@@ -1,4 +1,4 @@
-use crate::token_bucket::TokenBucket;
+use crate::api::token_bucket::TokenBucket;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};

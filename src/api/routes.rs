@@ -1,6 +1,7 @@
-use crate::claim::{ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
+use crate::api::token_bucket::TokenBucket;
+use crate::claim::manager::{ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
 use crate::job::{CONVERT_KIND, UPLOAD_KIND};
-use crate::{AppState, ConvertJob, Job, TokenBucket};
+use crate::{AppState, ConvertJob, Job};
 use axum::body::Body;
 use axum::extract::{Extension, Path as AxumPath, Query};
 use axum::http::{Request, Response, StatusCode, header};

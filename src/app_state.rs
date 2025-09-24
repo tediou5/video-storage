@@ -1,5 +1,4 @@
-use crate::claim::ClaimManager;
-use crate::claim_bucket::ClaimBucketManager;
+use crate::claim::{ClaimBucketManager, ClaimManager};
 use crate::job::manager::JobSetManager;
 use crate::job::raw::RawJob;
 use crate::job::{Job, JobResult};
