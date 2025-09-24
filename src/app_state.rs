@@ -135,8 +135,7 @@ impl AppState {
             let rx = std::pin::pin!(rx);
             let mut rx = rx.fuse();
 
-            let mut jobs: StreamMap<'_, String, Result<JobResult<RawJob>, RawJob>> =
-                StreamMap::default();
+            let mut jobs: StreamMap<'_, String, JobResult<RawJob, RawJob>> = StreamMap::default();
 
             loop {
                 debug!("Waiting for job");
@@ -148,13 +147,13 @@ impl AppState {
                             break;
                         };
 
-                        let job_id = job.id().to_string();
                         let kind = job.kind();
-                        let task = job.gen_task(this.clone(), semaphore.clone()).await;
-                        let task = async {
-                            task
-                                .map(|maybe_failed| maybe_failed.map(|maybe_done| maybe_done.map(RawJob::new)))
-                                .map_err(RawJob::new)
+                        let job_id = job.id().to_string();
+
+                        let this_c = this.clone();
+                        let semaphore_c = semaphore.clone();
+                        let task = async move {
+                            job.gen_task(this_c, semaphore_c).await.into_raw()
                         };
                         if !jobs.add_if_not_in_progress(job_id.clone(), Box::pin(task)) {
                             warn!("Job {job_id} already in-progress, skipping");
@@ -165,26 +164,23 @@ impl AppState {
                     }
                     (id, result) = jobs.select_next_some() => {
                         match result {
-                            Ok(Ok(next_job)) => {
-                                // remove finished job first
-                                let Some(job) = next_job else {
-                                    info!(id, "Job completed successfully");
-                                    continue;
-                                };
-
-                                let kind = job.kind();
-                                info!(job_id = id, kind = kind, "NextJob added to processing queue");
+                            JobResult::Done => {
+                                info!(id, "Job completed successfully");
+                                continue;
+                            },
+                            JobResult::Next(next_job) => {
+                                let kind = next_job.kind();
+                                info!(id, kind, "NextJob added to processing queue");
+                                _ = this.job_tx.unbounded_send(next_job);
+                            },
+                            JobResult::Retry(job) => {
+                                warn!(job_id = %job.id(), "Retrying job");
                                 _ = this.job_tx.unbounded_send(job);
                             },
-                            Ok(Err(failure_job)) => {
-                                info!("Job {id} completed with failure handling");
-                                this.jobs_manager.remove(&id).await;
-                                _ = this.job_tx.unbounded_send(RawJob::new(failure_job));
+                            JobResult::Err(failure_job) => {
+                                info!(id, "Job failed with failure handling");
+                                failure_job.execute_actions(&this).await;
                             },
-                            Err(retry_job) => {
-                                warn!(job_id = %retry_job.id(), "Retrying job");
-                                _ = this.job_tx.unbounded_send(retry_job);
-                            }
                         }
                     }
                 }

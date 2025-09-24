@@ -31,10 +31,6 @@ impl Job for UploadJob {
         UPLOAD_KIND
     }
 
-    fn need_permit(&self) -> bool {
-        false
-    }
-
     fn id(&self) -> &str {
         &self.id
     }
@@ -55,10 +51,6 @@ impl Job for UploadJob {
         })
     }
 
-    fn next_job(&self, _state: AppState) -> Option<impl Job> {
-        Option::<Self>::None
-    }
-
     fn wait_for_retry(&self) -> Option<Duration> {
         Some(Duration::from_secs(5))
     }
@@ -68,13 +60,9 @@ impl Job for UploadJob {
             self.id.clone(),
             self.kind(),
             vec![
+                Action::Cleanup,
                 Action::Webhook {
-                    kind: self.kind(),
                     message: "Upload job failed after all retries".to_string(),
-                },
-                Action::Cleanup {
-                    kind: self.kind(),
-                    job_id: self.id.clone(),
                 },
             ],
         )

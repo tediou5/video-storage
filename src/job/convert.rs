@@ -114,13 +114,9 @@ impl Job for ConvertJob {
             self.id.clone(),
             self.kind(),
             vec![
+                Action::Cleanup,
                 Action::Webhook {
-                    kind: self.kind(),
                     message: "Convert job failed after all retries".to_string(),
-                },
-                Action::Cleanup {
-                    kind: self.kind(),
-                    job_id: self.id.clone(),
                 },
             ],
         )

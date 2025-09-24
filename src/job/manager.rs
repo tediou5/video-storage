@@ -78,10 +78,8 @@ impl JobSetManager {
         let job = SerdeAbleRawJob::new(job.clone());
         let mut jobs = self.jobs.lock().await;
 
-        if jobs.iter().any(|j| j.id() == job.id()) {
-            tracing::debug!(id = %job.id(), "Job already exists");
-            return;
-        }
+        // remove any existing job with the same ID
+        jobs.retain(|j| j.id() != job.id());
 
         jobs.push(job);
         if let Err(error) = self.save(&jobs).await {
