@@ -61,18 +61,14 @@ impl Job for ConvertJob {
 
     fn gen_job(&self, state: AppState) -> TokioJoinHandle<anyhow::Result<()>> {
         let job = self.clone();
-        let upload_path = self.upload_path(&state);
-        let videos_dir = state.videos_dir().to_path_buf();
-        let temp_dir = state.temp_dir().to_path_buf();
-
         tokio::spawn(async move {
-            let temp_dir = temp_dir.join(format!("tmp-{}", job.id()));
-            let out_dir = videos_dir.join(job.id());
+            let temp_dir = state.temp_dir().join(format!("tmp-{}", job.id()));
+            let out_dir = state.videos_dir().join(job.id());
             tokio::fs::create_dir_all(&temp_dir).await?;
-            let sanitized_input = format!("/tmp/{}-sanitized.mp4", job.id());
-            _ = std::fs::File::create(&sanitized_input)?;
-            let input_path = upload_path.clone();
             tokio::task::spawn_blocking(move || {
+                let input_path = job.upload_path(&state);
+                let sanitized_input = format!("/tmp/{}-sanitized.mp4", job.id());
+                _ = std::fs::File::create(&sanitized_input)?;
                 remux_av_only(input_path.to_str().unwrap(), &sanitized_input)
                     .inspect_err(|error| error!(?input_path, ?error, "remuxing input failed"))?;
 
@@ -84,6 +80,13 @@ impl Job for ConvertJob {
                 // Cleanup original file
                 _ = std::fs::remove_file(&input_path);
                 info!(job_id = job.id(), "HLS conversion completed successfully");
+
+                tokio::spawn(async move {
+                    state
+                        .call_webhook(job.id(), CONVERT_KIND, "completed")
+                        .await;
+                });
+
                 Ok::<(), anyhow::Error>(())
             })
             .await??;
