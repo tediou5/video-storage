@@ -148,7 +148,6 @@ jobs:
 
                   # Build with incremental compilation
                   cargo build --all-features
-                  cargo build --release --all-features
 
             # Clippy
             - name: Run clippy
@@ -164,8 +163,8 @@ jobs:
             # Verify binary
             - name: Verify binary
               run: |
-                  ./target/release/video-storage --version || true
-                  ./target/release/video-storage --help
+                  ./target/debug/video-storage --version || true
+                  ./target/debug/video-storage --help
 
     # Verify dependency installation scripts
     # Note: For more comprehensive dependency testing, see .github/workflows/verify-deps.yml
@@ -221,13 +220,12 @@ jobs:
               run: |
                   cargo --version
                   cargo build --all-features
-                  cargo build --release --all-features
 
             # Test that the binary runs
             - name: Test binary execution
               run: |
-                  ./target/release/video-storage --version
-                  ./target/release/video-storage --help
+                  ./target/debug/video-storage --version
+                  ./target/debug/video-storage --help
 
     # Minimal build test for quick feedback
     quick-check:

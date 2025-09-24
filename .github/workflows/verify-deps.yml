@@ -99,15 +99,14 @@ jobs:
                   echo "::group::Building project"
                   cargo --version
                   cargo build --all-features
-                  cargo build --release --all-features
                   echo "::endgroup::"
 
             - name: Verify binary works
               run: |
                   . "$HOME/.cargo/env"
                   echo "::group::Testing binary"
-                  ./target/release/video-storage --version
-                  ./target/release/video-storage --help
+                  ./target/debug/video-storage --version
+                  ./target/debug/video-storage --help
                   echo "::endgroup::"
 
     # Test the script with partially installed dependencies
@@ -265,9 +264,8 @@ jobs:
               run: |
                   echo "::group::Building and testing"
                   cargo build --all-features
-                  cargo build --release --all-features
                   cargo test --all-features
-                  ./target/release/video-storage --version
+                  ./target/debug/video-storage --version
                   echo "::endgroup::"
 
     # Summary job
