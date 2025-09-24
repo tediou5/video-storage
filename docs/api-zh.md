@@ -135,108 +135,7 @@ curl -X POST "http://localhost:32146/upload?id=video123&crf=23" \
   --data-binary @input.mp4
 ```
 
-### 3. 上传视频对象文件
-
-上传与视频相关的其他文件（如字幕、缩略图等）。
-
-**接口地址**: `POST /upload-objects`
-**认证要求**: 无
-
-#### 查询参数 (Query Parameters)
-
-| 参数 | 类型 | 必填 | 说明 | 限制 |
-|-----|------|-----|------|------|
-| id | string | 是 | 视频任务ID | 不能包含 '/', '-', '.', ' ' |
-| name | string | 是 | 对象文件名 | 不能包含 '/', ' ' |
-
-#### 请求体
-
-- Content-Type: application/octet-stream
-- Body: 文件的二进制数据
-
-#### 响应格式
-
-成功响应 (200 OK):
-```json
-{
-  "job_id": "video123",
-  "message": "Upload object done"
-}
-```
-
-错误响应 (400 Bad Request):
-```json
-{
-  "job_id": "video123",
-  "message": "错误信息"
-}
-```
-
-错误信息可能包括：
-- "Invalid id, Cannot contain '/', '-', ' ' and '.'"
-- "Invalid object name, Cannot contain '/' and ' '"
-- "Failed to create upload job object file"
-- "Failed to write to upload job object file"
-
-#### CURL 示例
-
-```bash
-# 上传字幕文件
-curl -X POST "http://localhost:32146/upload-objects?id=video123&name=subtitle_en.vtt" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary @subtitle.vtt
-
-# 上传缩略图
-curl -X POST "http://localhost:32146/upload-objects?id=video123&name=thumbnail.jpg" \
-  -H "Content-Type: image/jpeg" \
-  --data-binary @thumb.jpg
-```
-
-### 4. 获取视频对象文件
-
-获取已上传的视频对象文件。
-
-**接口地址**: `GET /objects/{job_id}/{filename}`
-**认证要求**: 无
-
-#### 路径参数
-
-| 参数 | 类型 | 必填 | 说明 |
-|-----|------|-----|------|
-| job_id | string | 是 | 视频任务ID |
-| filename | string | 是 | 对象文件名 |
-
-#### 请求头 (可选)
-
-| 头部 | 说明 |
-|------|------|
-| Range | 支持范围请求，格式: `bytes=start-end` |
-
-#### 响应格式
-
-成功响应 (200 OK 或 206 Partial Content):
-- Content-Type: 根据文件扩展名自动判断
-- Accept-Ranges: bytes
-- Cache-Control: public,max-age=3600
-- Content-Length: 文件大小或范围大小
-- Content-Range: bytes start-end/total (仅在范围请求时)
-- Body: 文件内容
-
-错误响应 (404 Not Found):
-- 文件不存在
-
-#### CURL 示例
-
-```bash
-# 获取完整文件
-curl -O http://localhost:32146/objects/video123/subtitle_en.vtt
-
-# 范围请求（获取前1MB）
-curl -H "Range: bytes=0-1048575" \
-  http://localhost:32146/objects/video123/thumbnail.jpg
-```
-
-### 5. 查询任务队列状态
+### 3. 查询任务队列状态
 
 获取当前待处理任务的统计信息。
 
@@ -269,7 +168,7 @@ curl http://localhost:32146/waitlist
 
 外部 API 默认监听在 `0.0.0.0:32145`
 
-### 6. 获取视频文件
+### 4. 获取视频文件
 
 获取转换后的视频文件（HLS 格式）。
 
@@ -379,10 +278,6 @@ curl -X POST "http://localhost:32146/upload?id=myvideo&crf=23" \
 
 # 检查任务队列
 curl http://localhost:32146/waitlist
-
-# 上传相关文件（可选）
-curl -X POST "http://localhost:32146/upload-objects?id=myvideo&name=poster.jpg" \
-  --data-binary @poster.jpg
 ```
 
 ### 2. 创建访问令牌
