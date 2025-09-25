@@ -40,7 +40,7 @@ impl<N: Job, R: Job> JobResult<N, R> {
             JobResult::Done => JobResult::Done,
             JobResult::Next(job) => JobResult::Next(RawJob::new(job)),
             JobResult::Retry(job) => JobResult::Retry(RawJob::new(job)),
-            JobResult::Err(err) => JobResult::Err(err),
+            JobResult::Err(error) => JobResult::Err(error),
         }
     }
 }

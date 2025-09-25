@@ -1,7 +1,11 @@
+use ffmpeg_next as ffmpeg;
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::task::JoinHandle;
+use tokio::sync::OnceCell;
 use tokio::time::sleep;
 use video_storage::Config;
+
+static SERVER: OnceCell<TestServer> = OnceCell::const_new();
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct CreateClaimRequest {
@@ -25,10 +29,9 @@ struct CreateClaimResponse {
 
 /// Test harness that manages the server process
 struct TestServer {
-    handle: JoinHandle<()>,
+    _handle: JoinHandle<()>,
     e_port: u16,
     i_port: u16,
-    workspace: String,
     client: reqwest::Client,
 }
 
@@ -36,7 +39,13 @@ impl TestServer {
     /// Start the server in a subprocess
     async fn start() -> Self {
         // Only open when debugging
-        // tracing_subscriber::fmt::init();
+        tracing_subscriber::fmt::init();
+
+        // Initialize ffmpeg once
+        static FFMPEG_INIT: std::sync::Once = std::sync::Once::new();
+        FFMPEG_INIT.call_once(|| {
+            ffmpeg::init().unwrap();
+        });
 
         // Find an available port
         let e_port = portpicker::pick_unused_port().expect("No available port");
@@ -52,8 +61,15 @@ impl TestServer {
             ..Default::default()
         };
 
-        let handle = tokio::spawn(async move {
-            video_storage::run(config).await;
+        // Spawn the server in a separate thread with its own runtime
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                video_storage::run(config).await;
+            });
         });
 
         // Wait for server to be ready
@@ -79,11 +95,10 @@ impl TestServer {
         }
 
         TestServer {
-            handle,
+            _handle: handle,
             e_port,
             i_port,
             client,
-            workspace,
         }
     }
 
@@ -164,19 +179,9 @@ impl TestServer {
     }
 }
 
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        // Kill the server process
-        self.handle.abort();
-
-        // Clean up test workspace
-        std::fs::remove_dir_all(&self.workspace).ok();
-    }
-}
-
 #[tokio::test]
 async fn test_server_starts_successfully() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Check that waitlist endpoint works
     let response = server.get_without_auth("/waitlist").await;
@@ -190,7 +195,7 @@ async fn test_server_starts_successfully() {
 
 #[tokio::test]
 async fn test_no_auth_fails() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Request from internal URL should fail
     let response = server.get_without_auth("/videos/test_video.m3u8").await;
@@ -218,7 +223,7 @@ async fn test_no_auth_fails() {
 
 #[tokio::test]
 async fn test_valid_auth_succeeds() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Create a valid claim
     let token = server
@@ -235,7 +240,7 @@ async fn test_valid_auth_succeeds() {
 
 #[tokio::test]
 async fn test_asset_id_mismatch() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Create a claim for video1
     let token = server
@@ -250,7 +255,7 @@ async fn test_asset_id_mismatch() {
 
 #[tokio::test]
 async fn test_expired_token() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Create an expired claim (expired 1 hour ago)
     let token = server
@@ -269,7 +274,7 @@ async fn test_expired_token() {
 
 #[tokio::test]
 async fn test_width_restrictions() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Create a claim that only allows 720 and 1080 widths
     let token = server
@@ -298,7 +303,7 @@ async fn test_width_restrictions() {
 
 #[tokio::test]
 async fn test_empty_allowed_widths_allows_all() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Create a claim with empty allowed_widths (allows all widths)
     let token = server
@@ -317,7 +322,7 @@ async fn test_empty_allowed_widths_allows_all() {
 
 #[tokio::test]
 async fn test_time_window_for_segments() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Create a claim with 120 second window (30 segments at 4 seconds each)
     let now = SystemTime::now()
@@ -361,7 +366,7 @@ async fn test_time_window_for_segments() {
 
 #[tokio::test]
 async fn test_invalid_claim_token() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Test with malformed token
     let response = server
@@ -386,7 +391,7 @@ async fn test_invalid_claim_token() {
 
 #[tokio::test]
 async fn test_width_restrictions_with_segments() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Create a claim that only allows 720 width
     let token = server
@@ -415,7 +420,7 @@ async fn test_width_restrictions_with_segments() {
 
 #[tokio::test]
 async fn test_multiple_width_restrictions() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Create a claim that allows multiple specific widths
     let token = server
@@ -442,7 +447,7 @@ async fn test_multiple_width_restrictions() {
 
 #[tokio::test]
 async fn test_concurrent_requests() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Create a valid claim
     let token = server
@@ -485,7 +490,7 @@ async fn test_concurrent_requests() {
 
 #[tokio::test]
 async fn test_claim_creation_validation() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     // Test with empty asset_id
     let now = SystemTime::now()
@@ -537,7 +542,7 @@ async fn test_claim_creation_validation() {
 
 #[tokio::test]
 async fn test_claim_with_optional_parameters() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

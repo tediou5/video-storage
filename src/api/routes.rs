@@ -1,5 +1,5 @@
 use crate::api::token_bucket::TokenBucket;
-use crate::claim::manager::{ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
+use crate::claim::{ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
 use crate::job::{CONVERT_KIND, UPLOAD_KIND};
 use crate::{AppState, ConvertJob, Job};
 use axum::body::Body;
@@ -7,7 +7,7 @@ use axum::extract::{Extension, Path as AxumPath, Query};
 use axum::http::{Request, Response, StatusCode, header};
 use axum::response::{IntoResponse, Json};
 use bytes::Bytes;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use mime_guess::from_path;
 use opendal::Operator;
 use serde::{Deserialize, Serialize};
@@ -165,31 +165,21 @@ async fn try_serve_from_filesystem(
     start: u64,
     end: u64,
     bucket: TokenBucket,
-) -> Result<impl futures::Stream<Item = Result<Bytes, IoError>> + Send, String> {
-    let mut fh = tokio::fs::File::open(&path)
-        .await
-        .map_err(|e| e.to_string())?;
+) -> anyhow::Result<impl futures::Stream<Item = Result<Bytes, IoError>> + Send> {
+    let mut fh = tokio::fs::File::open(&path).await?;
 
-    fh.seek(std::io::SeekFrom::Start(start))
-        .await
-        .map_err(|e| e.to_string())?;
+    fh.seek(std::io::SeekFrom::Start(start)).await?;
     let len = end - start + 1;
 
     use tokio::io::AsyncReadExt as _;
-    let stream = ReaderStream::new(fh.take(len))
-        .map_err(|e| IoError::new(e.kind(), e.to_string()))
-        .then(move |res| {
-            let bucket = bucket.clone();
-            async move {
-                match res {
-                    Ok(chunk) => {
-                        bucket.consume(chunk.len()).await;
-                        Ok::<Bytes, IoError>(chunk)
-                    }
-                    Err(e) => Err(e),
-                }
-            }
-        });
+    let stream = ReaderStream::new(fh.take(len)).then(move |res| {
+        let bucket = bucket.clone();
+        async move {
+            let chunk = res?;
+            bucket.consume(chunk.len()).await;
+            Ok::<Bytes, IoError>(chunk)
+        }
+    });
 
     Ok(stream)
 }
@@ -200,15 +190,11 @@ async fn try_serve_from_s3(
     end: u64,
     operator: Operator,
     bucket: TokenBucket,
-) -> Result<impl futures::Stream<Item = Result<Bytes, IoError>> + Send, String> {
+) -> anyhow::Result<impl futures::Stream<Item = Result<Bytes, IoError>> + Send> {
     debug!(%s3_key, "Attempting to fetch from S3");
 
     // Read the specific range from S3
-    let data = operator
-        .read_with(&s3_key)
-        .range(start..=end)
-        .await
-        .map_err(|e| e.to_string())?;
+    let data = operator.read_with(&s3_key).range(start..=end).await?;
 
     // Create a stream from the data
     let chunks: Vec<Bytes> = data
@@ -283,11 +269,9 @@ async fn server_file_with_bucket(
 ) -> Result<Response<Body>, Infallible> {
     let maybe_filesize = if let Ok(metadata) = tokio::fs::metadata(&local_path).await {
         Some((metadata.len(), false))
-    } else if state.storage_manager.is_remote() {
+    } else if let Some(operator) = state.storage_manager.operator() {
         // Try to get size from S3
-        state
-            .storage_manager
-            .operator()
+        operator
             .stat(&s3_key)
             .await
             .ok()
@@ -304,7 +288,11 @@ async fn server_file_with_bucket(
     let len = end - start + 1;
 
     let maybe_res = if read_from_s3 {
-        let operator = state.storage_manager.operator().clone();
+        let operator = state
+            .storage_manager
+            .operator()
+            .expect("S3 operator should be available for remote storage")
+            .clone();
 
         try_serve_from_s3(s3_key, start, end, operator, bucket.clone())
             .await
@@ -394,7 +382,7 @@ pub async fn create_claim(
     };
 
     // Sign the claim
-    match state.claim_manager.sign_claim(&payload).await {
+    match state.claim_manager.sign_claim(&payload) {
         Ok(token) => {
             debug!(
                 asset_id = %payload.asset_id,
@@ -406,8 +394,8 @@ pub async fn create_claim(
             );
             (StatusCode::OK, Json(CreateClaimResponse { token })).into_response()
         }
-        Err(err) => {
-            error!("Failed to create claim: {err}");
+        Err(error) => {
+            error!(?error, "Failed to create claim");
             err_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create claim")
         }
     }

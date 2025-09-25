@@ -1,9 +1,10 @@
 use crate::api::token_bucket::TokenBucket;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::debug;
 
 /// A claim-specific bucket with metadata
@@ -19,48 +20,21 @@ pub struct ClaimBucket {
     max_kbps: u16,
     /// Maximum concurrent connections allowed
     max_concurrency: u16,
-    /// Current active connections
-    active_connections: Arc<AtomicU16>,
+    permits: Arc<Semaphore>,
 }
 
 impl ClaimBucket {
     /// Try to acquire a connection slot for a claim
-    pub async fn try_acquire_connection(&self) -> Result<Option<ConnectionGuard>, &'static str> {
+    pub fn try_acquire_connection(&self) -> Result<Option<OwnedSemaphorePermit>, &'static str> {
         if self.max_concurrency == 0 {
             return Ok(None);
         }
 
-        self.try_acquire_connection_inner().await
-    }
-
-    /// Try to acquire a connection slot for a claim
-    async fn try_acquire_connection_inner(&self) -> Result<Option<ConnectionGuard>, &'static str> {
-        for _ in 0..3 {
-            let current = self.active_connections.load(Ordering::Relaxed);
-            if current >= self.max_concurrency {
-                return Err("Max concurrency exceeded");
-            }
-
-            // Try to increment atomically
-            match self.active_connections.compare_exchange(
-                current,
-                current + 1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    return Ok(Some(ConnectionGuard {
-                        counter: self.active_connections.clone(),
-                    }));
-                }
-                Err(_) => {
-                    // Retry by recursion (rare case)
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            }
-        }
-
-        Err("Max retries exceeded")
+        self.permits
+            .clone()
+            .try_acquire_owned()
+            .map(Some)
+            .map_err(|_| "Max concurrency exceeded")
     }
 }
 
@@ -78,19 +52,28 @@ pub struct ClaimBucketManager {
 impl ClaimBucketManager {
     /// Create a new claim bucket manager
     pub fn new(default_token_rate: f64) -> Self {
-        let manager = Self {
+        Self {
             buckets: Arc::new(RwLock::new(HashMap::new())),
             default_token_rate,
             cleanup_interval: Duration::from_secs(300), // 5 minutes
-        };
+        }
+    }
 
-        // Start cleanup task
-        manager.start_cleanup_task();
-        manager
+    /// Start the background cleanup task
+    /// This must be called after the manager is created and when in an async context
+    pub fn start_cleanup_task(&self) {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(manager.cleanup_interval);
+            loop {
+                interval.tick().await;
+                manager.cleanup_expired();
+            }
+        });
     }
 
     /// Get or create a token bucket for a claim
-    pub async fn get_or_create_bucket(
+    pub fn get_or_create_bucket(
         &self,
         claim_token: &str,
         exp_unix: u32,
@@ -98,7 +81,7 @@ impl ClaimBucketManager {
         max_concurrency: u16,
     ) -> ClaimBucket {
         // First try to get existing bucket
-        let buckets = self.buckets.read().await;
+        let buckets = self.buckets.read();
         if let Some(claim_bucket) = buckets.get(claim_token).cloned() {
             debug!(
                 claim_token_hash = %hash_token(claim_token),
@@ -139,19 +122,19 @@ impl ClaimBucketManager {
             exp_unix,
             max_kbps,
             max_concurrency,
-            active_connections: Arc::new(AtomicU16::new(0)),
+            permits: Arc::new(Semaphore::new(max_concurrency as usize)),
         };
 
         // Insert into map
-        let mut buckets = self.buckets.write().await;
+        let mut buckets = self.buckets.write();
         buckets.insert(claim_token.to_string(), claim_bucket.clone());
 
         claim_bucket
     }
 
     /// Update last access time for a claim
-    pub async fn touch(&self, claim_token: &str) {
-        let buckets = self.buckets.read().await;
+    pub fn touch(&self, claim_token: &str) {
+        let buckets = self.buckets.read();
         if let Some(claim_bucket) = buckets.get(claim_token) {
             let now_ms = Instant::now().elapsed().as_millis() as u64;
             claim_bucket.last_access.store(now_ms, Ordering::Relaxed);
@@ -159,14 +142,14 @@ impl ClaimBucketManager {
     }
 
     /// Remove expired buckets
-    async fn cleanup_expired(&self) {
+    fn cleanup_expired(&self) {
         let now_ms = Instant::now().elapsed().as_millis() as u64;
         let now_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as u32;
 
-        let mut buckets = self.buckets.write().await;
+        let mut buckets = self.buckets.write();
         let before_count = buckets.len();
 
         // Remove buckets that are either expired or haven't been accessed recently
@@ -208,22 +191,10 @@ impl ClaimBucketManager {
         }
     }
 
-    /// Start background task to cleanup expired buckets
-    fn start_cleanup_task(&self) {
-        let manager = self.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(manager.cleanup_interval);
-            loop {
-                interval.tick().await;
-                manager.cleanup_expired().await;
-            }
-        });
-    }
-
     /// Get statistics about current buckets
     #[allow(dead_code)]
-    pub async fn stats(&self) -> ClaimBucketStats {
-        let buckets = self.buckets.read().await;
+    pub fn stats(&self) -> ClaimBucketStats {
+        let buckets = self.buckets.read();
         let now_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -269,20 +240,6 @@ pub struct ClaimBucketStats {
     pub limited: usize,
 }
 
-/// Connection guard that decrements counter on drop
-pub struct ConnectionGuard {
-    counter: Arc<AtomicU16>,
-}
-
-impl Drop for ConnectionGuard {
-    fn drop(&mut self) {
-        self.counter
-            .update(Ordering::Release, Ordering::Acquire, |count| {
-                if count > 0 { count - 1 } else { count }
-            });
-    }
-}
-
 /// Hash a token for logging (to avoid exposing full tokens in logs)
 fn hash_token(token: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
@@ -300,62 +257,21 @@ fn hash_token(token: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_sub_zero() {
-        let counter = Arc::new(AtomicU16::new(1));
-
-        let c = counter.clone();
-        let j1 = std::thread::spawn(move || {
-            c.update(Ordering::Release, Ordering::Acquire, |count| {
-                if count > 0 { count - 1 } else { count }
-            });
-            assert_eq!(c.load(Ordering::Relaxed), 0);
-        });
-
-        let c = counter.clone();
-        let j2 = std::thread::spawn(move || {
-            c.update(Ordering::Release, Ordering::Acquire, |count| {
-                if count > 0 { count - 1 } else { count }
-            });
-            assert_eq!(c.load(Ordering::Relaxed), 0);
-        });
-
-        let c = counter.clone();
-        let j3 = std::thread::spawn(move || {
-            c.update(Ordering::Release, Ordering::Acquire, |count| {
-                if count > 0 { count - 1 } else { count }
-            });
-            assert_eq!(c.load(Ordering::Relaxed), 0);
-        });
-
-        j1.join().unwrap();
-        j2.join().unwrap();
-        j3.join().unwrap();
-
-        assert_eq!(counter.load(Ordering::Relaxed), 0);
-    }
-
     #[tokio::test]
     async fn test_bucket_creation_and_reuse() {
         let manager = ClaimBucketManager::new(1000.0);
 
         // Create a bucket
-        let _bucket1 = manager
-            .get_or_create_bucket("token1", 2000000000, 500, 10)
-            .await;
+        let _bucket1 = manager.get_or_create_bucket("token1", 2000000000, 500, 10);
 
         // Get the same bucket again
-        let _bucket2 = manager
-            .get_or_create_bucket("token1", 2000000000, 500, 10)
-            .await;
+        let _bucket2 = manager.get_or_create_bucket("token1", 2000000000, 500, 10);
 
         // They should have the same refill rate (cloned from same source)
         // Note: We can't check pointer equality anymore since they're clones
 
         // Different token should get different bucket
-        let _bucket3 = manager
-            .get_or_create_bucket("token2", 2000000000, 1000, 5)
-            .await;
+        let _bucket3 = manager.get_or_create_bucket("token2", 2000000000, 1000, 5);
     }
 
     #[tokio::test]
@@ -363,15 +279,11 @@ mod tests {
         let manager = ClaimBucketManager::new(1000.0);
 
         // Test with specific kbps
-        let _bucket = manager
-            .get_or_create_bucket("token1", 2000000000, 800, 10)
-            .await;
+        let _bucket = manager.get_or_create_bucket("token1", 2000000000, 800, 10);
         // 800 kbps = 800 * 1024 / 8 = 102400 bytes/second
 
         // Test with unlimited (0 kbps)
-        let _bucket = manager
-            .get_or_create_bucket("token2", 2000000000, 0, 20)
-            .await;
+        let _bucket = manager.get_or_create_bucket("token2", 2000000000, 0, 20);
         // Should use default rate
     }
 
@@ -381,21 +293,17 @@ mod tests {
 
         // Add an expired bucket
         let past_time = 1000000000u32; // Far in the past
-        manager
-            .get_or_create_bucket("expired", past_time, 500, 10)
-            .await;
+        manager.get_or_create_bucket("expired", past_time, 500, 10);
 
         // Add an active bucket
         let future_time = 2000000000u32;
-        manager
-            .get_or_create_bucket("active", future_time, 500, 10)
-            .await;
+        manager.get_or_create_bucket("active", future_time, 500, 10);
 
         // Run cleanup
-        manager.cleanup_expired().await;
+        manager.cleanup_expired();
 
         // Check stats
-        let stats = manager.stats().await;
+        let stats = manager.stats();
         assert_eq!(stats.total, 1); // Only active bucket should remain
         assert_eq!(stats.active, 1);
     }

@@ -1,5 +1,5 @@
 #![allow(incomplete_features)]
-#![feature(atomic_try_update, lazy_type_alias)]
+#![feature(lazy_type_alias)]
 
 pub mod api;
 pub mod app_state;
@@ -9,11 +9,9 @@ pub mod job;
 pub mod opendal;
 pub mod stream_map;
 
-use axum::{
-    Router,
-    extract::Extension,
-    routing::{get, post},
-};
+use axum::Router;
+use axum::extract::Extension;
+use axum::routing::{get, post};
 use std::path::PathBuf;
 use std::str::FromStr;
 use tokio::net::TcpListener;
@@ -42,6 +40,9 @@ pub const RESOLUTIONS: [(u32, u32); 3] = [(720, 1280), (540, 960), (480, 854)];
 pub const BANDWIDTHS: [u32; 3] = [2500000, 1500000, 1000000];
 
 pub async fn run(config: Config) {
+    // Ensure we're in a proper async context by yielding once
+    tokio::task::yield_now().await;
+
     // Extract configuration values
     let listen_on_port = config.listen_on_port;
     let internal_port = config.internal_port;
@@ -89,7 +90,6 @@ pub async fn run(config: Config) {
     let storage_manager = StorageManager::new(storage_config)
         .await
         .expect("Failed to initialize storage manager");
-
     let state = AppState::new(
         token_rate,
         permits,
