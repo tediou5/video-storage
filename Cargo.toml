@@ -51,3 +51,6 @@ parking_lot = "0.12.4"
 tower = "0.5"
 portpicker = "0.1"
 uuid = { version = "1.10", features = ["v4"] }
+tempfile = "3.8"
+warp = "0.3"
+serde_urlencoded = "0.7"
