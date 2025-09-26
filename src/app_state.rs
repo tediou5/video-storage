@@ -16,10 +16,10 @@ const TEMP_DIR: &str = "temp";
 const UPLOADS_DIR: &str = "uploads";
 const VIDEOS_DIR: &str = "videos";
 
-async fn init_workspace(workspace: &Path) -> std::io::Result<()> {
-    tokio::fs::create_dir_all(workspace.join(TEMP_DIR)).await?;
-    tokio::fs::create_dir_all(workspace.join(UPLOADS_DIR)).await?;
-    tokio::fs::create_dir_all(workspace.join(VIDEOS_DIR)).await?;
+fn init_workspace(workspace: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(workspace.join(TEMP_DIR))?;
+    std::fs::create_dir_all(workspace.join(UPLOADS_DIR))?;
+    std::fs::create_dir_all(workspace.join(VIDEOS_DIR))?;
     Ok(())
 }
 
@@ -28,8 +28,8 @@ pub struct AppState {
     pub job_tx: UnboundedSender<RawJob>,
     pub jobs_manager: JobSetManager,
     pub storage_manager: Arc<StorageManager>,
-    pub claim_manager: Arc<ClaimManager>,
-    pub claim_bucket_manager: Arc<ClaimBucketManager>,
+    pub claim_manager: ClaimManager,
+    pub claim_bucket_manager: ClaimBucketManager,
 
     pub temp_dir: PathBuf,
     pub videos_dir: PathBuf,
@@ -46,17 +46,15 @@ impl AppState {
         webhook_url: Option<String>,
         claim_keys: Vec<(u8, [u8; 32])>,
     ) -> anyhow::Result<Self> {
-        init_workspace(workspace).await?;
+        init_workspace(workspace)?;
         let (tx, rx) = unbounded();
 
         let jobs_manager = JobSetManager::new(workspace, &tx)?;
 
         // Initialize claim managers
-        let claim_manager = Arc::new(
-            ClaimManager::from_config(claim_keys)
-                .map_err(|error| std::io::Error::new(StdIoErrorKind::InvalidInput, error))?,
-        );
-        let claim_bucket_manager = Arc::new(ClaimBucketManager::new(token_rate));
+        let claim_manager = ClaimManager::from_config(claim_keys)
+            .map_err(|error| std::io::Error::new(StdIoErrorKind::InvalidInput, error))?;
+        let claim_bucket_manager = ClaimBucketManager::new(token_rate);
 
         let this = Self {
             job_tx: tx,
@@ -71,7 +69,12 @@ impl AppState {
             webhook_url,
         };
 
-        this.handle_jobs(rx, permits);
+        // Start the cleanup task after we're in async context
+        this.claim_bucket_manager.start_cleanup_task();
+
+        // Start job handler
+        this.start_job_handler(rx, permits);
+
         Ok(this)
     }
 
@@ -116,14 +119,14 @@ impl AppState {
                         );
                     }
                 }
-                Err(err) => {
-                    error!(job_id, webhook_url, ?err, "Failed to call webhook");
+                Err(error) => {
+                    error!(job_id, webhook_url, ?error, "Failed to call webhook");
                 }
             }
         }
     }
 
-    fn handle_jobs(&self, rx: UnboundedReceiver<RawJob>, permits: usize) {
+    fn start_job_handler(&self, rx: UnboundedReceiver<RawJob>, permits: usize) {
         info!(permits, "Job handler started");
         let this = self.clone();
         let semaphore = Arc::new(Semaphore::new(permits));

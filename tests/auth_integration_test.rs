@@ -1,7 +1,11 @@
+use ffmpeg_next as ffmpeg;
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::task::JoinHandle;
+use tokio::sync::OnceCell;
 use tokio::time::sleep;
 use video_storage::Config;
+
+static SERVER: OnceCell<TestServer> = OnceCell::const_new();
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct CreateClaimRequest {
@@ -25,18 +29,22 @@ struct CreateClaimResponse {
 
 /// Test harness that manages the server process
 struct TestServer {
-    handle: JoinHandle<()>,
+    _handle: JoinHandle<()>,
     e_port: u16,
     i_port: u16,
-    workspace: String,
-    client: reqwest::Client,
 }
 
 impl TestServer {
     /// Start the server in a subprocess
     async fn start() -> Self {
         // Only open when debugging
-        // tracing_subscriber::fmt::init();
+        tracing_subscriber::fmt::init();
+
+        // Initialize ffmpeg once
+        static FFMPEG_INIT: std::sync::Once = std::sync::Once::new();
+        FFMPEG_INIT.call_once(|| {
+            ffmpeg::init().unwrap();
+        });
 
         // Find an available port
         let e_port = portpicker::pick_unused_port().expect("No available port");
@@ -52,20 +60,28 @@ impl TestServer {
             ..Default::default()
         };
 
-        let handle = tokio::spawn(async move {
-            video_storage::run(config).await;
+        // Spawn the server in a separate thread with its own runtime
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                video_storage::run(config).await;
+            });
         });
 
+        let server = TestServer {
+            _handle: handle,
+            e_port,
+            i_port,
+        };
         // Wait for server to be ready
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(1))
-            .build()
-            .unwrap();
+        let client = server.client();
 
         sleep(Duration::from_millis(1)).await;
         // Poll until server is ready
-        for _ in 0..3 {
+        for _ in 0..200 {
             if let Ok(response) = client
                 .get(format!("http://127.0.0.1:{i_port}/waitlist"))
                 .send()
@@ -78,13 +94,7 @@ impl TestServer {
             sleep(Duration::from_millis(10)).await;
         }
 
-        TestServer {
-            handle,
-            e_port,
-            i_port,
-            client,
-            workspace,
-        }
+        server
     }
 
     fn ext_url(&self) -> String {
@@ -95,20 +105,36 @@ impl TestServer {
         format!("http://127.0.0.1:{}", self.i_port)
     }
 
+    fn client(&self) -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap()
+    }
+
     /// Create a claim token via HTTP API
     async fn create_claim(
         &self,
+        client: &reqwest::Client,
         asset_id: &str,
         allowed_widths: Vec<u16>,
         exp_offset: i64,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        self.create_claim_with_concurrency(asset_id, Some(allowed_widths), exp_offset, Some(3))
-            .await
+        self.create_claim_with_concurrency(
+            client,
+            asset_id,
+            Some(allowed_widths),
+            exp_offset,
+            Some(3),
+        )
+        .await
     }
 
     /// Create a claim token via HTTP API
     async fn create_claim_with_concurrency(
         &self,
+        client: &reqwest::Client,
         asset_id: &str,
         allowed_widths: Option<Vec<u16>>,
         exp_offset: i64,
@@ -130,7 +156,7 @@ impl TestServer {
         };
 
         let url = format!("{}/claims", self.int_url());
-        let response = self.client.post(&url).json(&request).send().await?;
+        let response = client.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
             return Err(format!(
@@ -145,8 +171,13 @@ impl TestServer {
     }
 
     /// Make an authenticated GET request
-    async fn get_with_auth(&self, path: &str, token: &str) -> reqwest::Response {
-        self.client
+    async fn get_with_auth(
+        &self,
+        client: &reqwest::Client,
+        path: &str,
+        token: &str,
+    ) -> reqwest::Response {
+        client
             .get(format!("{}{}", self.ext_url(), path))
             .header("Authorization", format!("Bearer {}", token))
             .send()
@@ -155,8 +186,8 @@ impl TestServer {
     }
 
     /// Make an unauthenticated GET request
-    async fn get_without_auth(&self, path: &str) -> reqwest::Response {
-        self.client
+    async fn get_without_auth(&self, client: &reqwest::Client, path: &str) -> reqwest::Response {
+        client
             .get(format!("{}{}", self.int_url(), path))
             .send()
             .await
@@ -164,22 +195,13 @@ impl TestServer {
     }
 }
 
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        // Kill the server process
-        self.handle.abort();
-
-        // Clean up test workspace
-        std::fs::remove_dir_all(&self.workspace).ok();
-    }
-}
-
 #[tokio::test]
 async fn test_server_starts_successfully() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Check that waitlist endpoint works
-    let response = server.get_without_auth("/waitlist").await;
+    let response = server.get_without_auth(&client, "/waitlist").await;
     assert_eq!(response.status(), 200);
 
     let body: serde_json::Value = response.json().await.unwrap();
@@ -190,15 +212,17 @@ async fn test_server_starts_successfully() {
 
 #[tokio::test]
 async fn test_no_auth_fails() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Request from internal URL should fail
-    let response = server.get_without_auth("/videos/test_video.m3u8").await;
+    let response = server
+        .get_without_auth(&client, "/videos/test_video.m3u8")
+        .await;
     assert_eq!(response.status(), 404);
 
     // Request without Authorization header should fail
-    let response = server
-        .client
+    let response = client
         .get(format!("{}/videos/test_video.m3u8", server.ext_url()))
         .send()
         .await
@@ -206,8 +230,7 @@ async fn test_no_auth_fails() {
     assert_eq!(response.status(), 401);
 
     // Request with invalid Authorization header should fail
-    let response = server
-        .client
+    let response = client
         .get(format!("{}/videos/test_video.m3u8", server.ext_url()))
         .header("Authorization", "InvalidToken")
         .send()
@@ -218,43 +241,48 @@ async fn test_no_auth_fails() {
 
 #[tokio::test]
 async fn test_valid_auth_succeeds() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Create a valid claim
     let token = server
-        .create_claim("test_video", vec![], 3600)
+        .create_claim(&client, "test_video", vec![], 3600)
         .await
         .expect("Failed to create claim");
 
     // Request with valid token should succeed (would return NOT_FOUND since file doesn't exist)
     let response = server
-        .get_with_auth("/videos/test_video.m3u8", &token)
+        .get_with_auth(&client, "/videos/test_video.m3u8", &token)
         .await;
     assert_eq!(response.status(), 404);
 }
 
 #[tokio::test]
 async fn test_asset_id_mismatch() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Create a claim for video1
     let token = server
-        .create_claim("video1", vec![], 3600)
+        .create_claim(&client, "video1", vec![], 3600)
         .await
         .expect("Failed to create claim");
 
     // Try to access video2 with video1's token
-    let response = server.get_with_auth("/videos/video2.m3u8", &token).await;
+    let response = server
+        .get_with_auth(&client, "/videos/video2.m3u8", &token)
+        .await;
     assert_eq!(response.status(), 403);
 }
 
 #[tokio::test]
 async fn test_expired_token() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Create an expired claim (expired 1 hour ago)
     let token = server
-        .create_claim("test_video", vec![], 1)
+        .create_claim(&client, "test_video", vec![], 1)
         .await
         .expect("Failed to create claim");
 
@@ -262,54 +290,60 @@ async fn test_expired_token() {
 
     // Request with expired token should fail
     let response = server
-        .get_with_auth("/videos/test_video.m3u8", &token)
+        .get_with_auth(&client, "/videos/test_video.m3u8", &token)
         .await;
     assert_eq!(response.status(), 401);
 }
 
 #[tokio::test]
 async fn test_width_restrictions() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Create a claim that only allows 720 and 1080 widths
     let token = server
-        .create_claim("test_video", vec![720, 1080], 3600)
+        .create_claim(&client, "test_video", vec![720, 1080], 3600)
         .await
         .expect("Failed to create claim");
 
     // Accessing allowed width should succeed (would return NOT_FOUND since file doesn't exist)
     let response = server
-        .get_with_auth("/videos/720/test_video.m3u8", &token)
+        .get_with_auth(&client, "/videos/720/test_video.m3u8", &token)
         .await;
     assert_eq!(response.status(), 404);
 
     // Accessing disallowed width should fail
     let response = server
-        .get_with_auth("/videos/1920/test_video.m3u8", &token)
+        .get_with_auth(&client, "/videos/1920/test_video.m3u8", &token)
         .await;
     assert_eq!(response.status(), 403);
 
     // Master playlist (no width) should always be allowed
     let response = server
-        .get_with_auth("/videos/test_video.m3u8", &token)
+        .get_with_auth(&client, "/videos/test_video.m3u8", &token)
         .await;
     assert_eq!(response.status(), 404);
 }
 
 #[tokio::test]
 async fn test_empty_allowed_widths_allows_all() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Create a claim with empty allowed_widths (allows all widths)
     let token = server
-        .create_claim("test_video", vec![], 3600)
+        .create_claim(&client, "test_video", vec![], 3600)
         .await
         .expect("Failed to create claim");
 
     // Should allow any width
     for width in &[360, 480, 720, 1080, 1920, 3840] {
         let response = server
-            .get_with_auth(&format!("/videos/{}/test_video.m3u8", width), &token)
+            .get_with_auth(
+                &client,
+                &format!("/videos/{}/test_video.m3u8", width),
+                &token,
+            )
             .await;
         assert_eq!(response.status(), 404);
     }
@@ -317,7 +351,8 @@ async fn test_empty_allowed_widths_allows_all() {
 
 #[tokio::test]
 async fn test_time_window_for_segments() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Create a claim with 120 second window (30 segments at 4 seconds each)
     let now = SystemTime::now()
@@ -335,8 +370,7 @@ async fn test_time_window_for_segments() {
         allowed_widths: Some(vec![1920]),
     };
 
-    let response = server
-        .client
+    let response = client
         .post(format!("{}/claims", server.int_url()))
         .json(&request)
         .send()
@@ -348,24 +382,24 @@ async fn test_time_window_for_segments() {
 
     // Segment 20 should be allowed (within 30 segment window)
     let response = server
-        .get_with_auth("/videos/test_video-020.m4s", &token)
+        .get_with_auth(&client, "/videos/test_video-020.m4s", &token)
         .await;
     assert_eq!(response.status(), 404);
 
     // Segment 40 should be denied (outside 30 segment window)
     let response = server
-        .get_with_auth("/videos/test_video-040.m4s", &token)
+        .get_with_auth(&client, "/videos/test_video-040.m4s", &token)
         .await;
     assert_eq!(response.status(), 403);
 }
 
 #[tokio::test]
 async fn test_invalid_claim_token() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Test with malformed token
-    let response = server
-        .client
+    let response = client
         .get(format!("{}/videos/test_video.m3u8", server.ext_url()))
         .header("Authorization", "Bearer invalid_base64_token!!!")
         .send()
@@ -374,8 +408,7 @@ async fn test_invalid_claim_token() {
     assert_eq!(response.status(), 401);
 
     // Test with random base64 token
-    let response = server
-        .client
+    let response = client
         .get(format!("{}/videos/test_video.m3u8", server.ext_url()))
         .header("Authorization", "Bearer YmFkX3Rva2Vu") // "bad_token" in base64
         .send()
@@ -386,47 +419,53 @@ async fn test_invalid_claim_token() {
 
 #[tokio::test]
 async fn test_width_restrictions_with_segments() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Create a claim that only allows 720 width
     let token = server
-        .create_claim("test_video", vec![720], 3600)
+        .create_claim(&client, "test_video", vec![720], 3600)
         .await
         .expect("Failed to create claim");
 
     // Init segment with allowed width should pass
     let response = server
-        .get_with_auth("/videos/720/test_video-init.mp4", &token)
+        .get_with_auth(&client, "/videos/720/test_video-init.mp4", &token)
         .await;
     assert_eq!(response.status(), 404);
 
     // Video segment with allowed width should pass
     let response = server
-        .get_with_auth("/videos/720/test_video-001.m4s", &token)
+        .get_with_auth(&client, "/videos/720/test_video-001.m4s", &token)
         .await;
     assert_eq!(response.status(), 404);
 
     // Video segment with disallowed width should fail
     let response = server
-        .get_with_auth("/videos/1080/test_video-001.m4s", &token)
+        .get_with_auth(&client, "/videos/1080/test_video-001.m4s", &token)
         .await;
     assert_eq!(response.status(), 403);
 }
 
 #[tokio::test]
 async fn test_multiple_width_restrictions() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Create a claim that allows multiple specific widths
     let token = server
-        .create_claim("test_video", vec![480, 720, 1080], 3600)
+        .create_claim(&client, "test_video", vec![480, 720, 1080], 3600)
         .await
         .expect("Failed to create claim");
 
     // Test allowed widths
     for width in &[480, 720, 1080] {
         let response = server
-            .get_with_auth(&format!("/videos/{}/test_video.m3u8", width), &token)
+            .get_with_auth(
+                &client,
+                &format!("/videos/{}/test_video.m3u8", width),
+                &token,
+            )
             .await;
         assert_eq!(response.status(), 404);
     }
@@ -434,7 +473,11 @@ async fn test_multiple_width_restrictions() {
     // Test disallowed widths
     for width in &[360, 1920, 3840] {
         let response = server
-            .get_with_auth(&format!("/videos/{}/test_video.m3u8", width), &token)
+            .get_with_auth(
+                &client,
+                &format!("/videos/{}/test_video.m3u8", width),
+                &token,
+            )
             .await;
         assert_eq!(response.status(), 403);
     }
@@ -442,23 +485,24 @@ async fn test_multiple_width_restrictions() {
 
 #[tokio::test]
 async fn test_concurrent_requests() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Create a valid claim
     let token = server
-        .create_claim_with_concurrency("test_video", None, 3600, None)
+        .create_claim_with_concurrency(&client, "test_video", None, 3600, None)
         .await
         .expect("Failed to create claim");
 
     // Make multiple concurrent requests with the same token
     let mut handles = vec![];
+    let client = server.client();
     for i in 0..5 {
         let base_url = server.ext_url();
         let token_clone = token.clone();
-        let client = server.client.clone();
-
+        let client_c = client.clone();
         let handle = tokio::spawn(async move {
-            let response = client
+            let response = client_c
                 .get(format!("{}/videos/test_video-{:03}.m4s", base_url, i))
                 .header("Authorization", format!("Bearer {}", token_clone))
                 .send()
@@ -485,7 +529,8 @@ async fn test_concurrent_requests() {
 
 #[tokio::test]
 async fn test_claim_creation_validation() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     // Test with empty asset_id
     let now = SystemTime::now()
@@ -503,8 +548,7 @@ async fn test_claim_creation_validation() {
         allowed_widths: Some(vec![]),
     };
 
-    let response = server
-        .client
+    let response = client
         .post(format!("{}/claims", server.int_url()))
         .json(&request)
         .send()
@@ -524,8 +568,7 @@ async fn test_claim_creation_validation() {
         allowed_widths: Some(vec![]),
     };
 
-    let response = server
-        .client
+    let response = client
         .post(format!("{}/claims", server.int_url()))
         .json(&request)
         .send()
@@ -537,7 +580,8 @@ async fn test_claim_creation_validation() {
 
 #[tokio::test]
 async fn test_claim_with_optional_parameters() {
-    let server = TestServer::start().await;
+    let server = SERVER.get_or_init(TestServer::start).await;
+    let client = server.client();
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -555,8 +599,7 @@ async fn test_claim_with_optional_parameters() {
         allowed_widths: None,
     };
 
-    let response = server
-        .client
+    let response = client
         .post(format!("{}/claims", server.int_url()))
         .json(&minimal_request)
         .send()
@@ -578,8 +621,7 @@ async fn test_claim_with_optional_parameters() {
         allowed_widths: None,
     };
 
-    let response = server
-        .client
+    let response = client
         .post(format!("{}/claims", server.int_url()))
         .json(&partial_request)
         .send()

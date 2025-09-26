@@ -46,19 +46,27 @@ cargo clippy --all-targets --all-features
 
 ### Core Components Structure
 
--   `src/main.rs`: Application entry point. Initializes configuration, logging, and FFmpeg, then starts the web server.
--   `src/lib.rs`: Main library crate containing the `run` function that sets up the Axum server, routes, and application state.
--   `src/routes.rs`: Defines all HTTP API endpoints (e.g., for uploading, serving videos, and managing claims) and their handlers.
--   `src/app_state.rs`: Defines the `AppState` struct, which holds shared application state (like job managers, storage configuration, and claim managers) and is accessible by all route handlers.
--   `src/config.rs`: Handles loading and parsing of application configuration from a `config.toml` file and command-line arguments.
--   `src/job/`: Module for the background job processing system.
-    -   `manager.rs`: Manages the lifecycle of jobs, including persisting the job queue to a JSON file to survive restarts.
-    -   `convert.rs`, `upload.rs`, `raw.rs`: Define the logic for specific job types, such as video transcoding and uploading to storage.
--   `src/claim.rs`, `claim_middleware.rs`, `claim_bucket.rs`: Implements a security and access control model based on "claims" to authorize access to video assets and manage usage quotas.
--   `src/opendal.rs`: Provides a storage abstraction layer using `OpenDAL`, enabling the use of different backends like the local filesystem or cloud storage (e.g., S3).
--   `src/token_bucket.rs`: Implements a token bucket algorithm for rate-limiting data transfer, used to control video streaming bandwidth.
--   `Cargo.toml`: Defines project metadata, features, and dependencies (e.g., `axum`, `tokio`, `ffmpeg-next`, `opendal`).
--   `tests/`: Contains integration tests for verifying endpoint functionality, such as the authentication flow.
+```text
+video-storage/
+├── src/                      # Main Rust source code
+│   ├── main.rs              # Application entry point & server initialization
+│   ├── lib.rs               # Main library crate with Axum server setup
+│   ├── app_state.rs         # Shared application state management
+│   ├── config.rs            # Configuration loading & parsing
+│   ├── opendal.rs           # Storage abstraction layer (OpenDAL)
+│   ├── stream_map.rs        # Video streaming utilities
+│   ├── api/                 # HTTP API layer
+│   │   ├── routes.rs        # Route handlers for all endpoints
+│   │   ├── middleware.rs    # HTTP middleware components
+│   │   └── token_bucket.rs  # Rate limiting for video streaming
+│   ├── claim/               # Access control & authorization
+│   └── job/                 # Background job processing system
+├── tests/                   # Integration tests
+├── docs/                    # Project documentation
+├── scripts/                 # Development & deployment scripts
+└── .github/                 # GitHub workflows & templates
+
+```
 
 ### Key Architectural Patterns
 

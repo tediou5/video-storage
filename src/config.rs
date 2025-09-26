@@ -125,7 +125,7 @@ fn parse_claim_key(s: &str) -> Result<(u8, [u8; 32]), String> {
 
     let key_bytes = STANDARD
         .decode(parts[1])
-        .map_err(|err| format!("Failed to decode base64 key for {kid}: {err}"))?;
+        .map_err(|error| format!("Failed to decode base64 key for {kid}: {error}"))?;
 
     // Validate key length
     if key_bytes.len() != 32 {

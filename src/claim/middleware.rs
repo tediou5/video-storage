@@ -1,20 +1,17 @@
 use crate::api::routes::err_response;
 use crate::claim::bucket::ClaimBucketManager;
-use crate::claim::manager::{ClaimManager, validate_claim_time_and_resource};
-use axum::{
-    extract::{Path, Request, State},
-    http::{StatusCode, header},
-    middleware::Next,
-    response::{IntoResponse, Response},
-};
-use std::sync::Arc;
+use crate::claim::{ClaimManager, validate_claim_time_and_resource};
+use axum::extract::{Path, Request, State};
+use axum::http::{StatusCode, header};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use tracing::{debug, warn};
 
 /// Claim verification state to be passed to handlers
 #[derive(Clone)]
 pub struct ClaimState {
-    pub claim_manager: Arc<ClaimManager>,
-    pub bucket_manager: Arc<ClaimBucketManager>,
+    pub claim_manager: ClaimManager,
+    pub bucket_manager: ClaimBucketManager,
 }
 
 /// Middleware for claim-based authentication and authorization
@@ -44,7 +41,7 @@ pub async fn claim_auth_middleware(
     };
 
     // Verify the claim token
-    let claim_payload = match claim_state.claim_manager.verify_claim(&token).await {
+    let claim_payload = match claim_state.claim_manager.verify_claim(&token) {
         Ok(payload) => payload,
         Err(error) => {
             warn!(?error, "Failed to verify claim");
@@ -86,18 +83,15 @@ pub async fn claim_auth_middleware(
     );
 
     // Get or create rate limit bucket for this claim
-    let bucket = claim_state
-        .bucket_manager
-        .get_or_create_bucket(
-            &token,
-            claim_payload.exp_unix,
-            claim_payload.max_kbps,
-            claim_payload.max_concurrency,
-        )
-        .await;
+    let bucket = claim_state.bucket_manager.get_or_create_bucket(
+        &token,
+        claim_payload.exp_unix,
+        claim_payload.max_kbps,
+        claim_payload.max_concurrency,
+    );
 
     // Try to acquire a connection slot for concurrency control
-    let Ok(_guard) = bucket.try_acquire_connection().await else {
+    let Ok(_guard) = bucket.try_acquire_connection() else {
         warn!(
             asset_id,
             max_concurrency = claim_payload.max_concurrency,
@@ -114,7 +108,7 @@ pub async fn claim_auth_middleware(
     req.extensions_mut().insert(bucket.bucket);
 
     // Update last access time
-    claim_state.bucket_manager.touch(&token).await;
+    claim_state.bucket_manager.touch(&token);
 
     // Continue to the actual handler
     next.run(req).await

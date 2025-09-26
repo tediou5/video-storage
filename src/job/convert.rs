@@ -96,7 +96,7 @@ impl Job for ConvertJob {
     }
 
     fn next_job(&self, state: AppState) -> Option<impl Job> {
-        if state.storage_manager.is_remote() {
+        if state.storage_manager.operator().is_some() {
             let next = UploadJob::new(self.id.clone());
 
             let next_c = next.clone();

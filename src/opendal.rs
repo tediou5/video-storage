@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use async_stream::try_stream;
 use futures::StreamExt;
-use opendal::services::{Fs, S3};
+use opendal::services::S3;
 use opendal::{Operator, layers::RetryLayer};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -32,75 +32,65 @@ pub enum StorageBackend {
 /// Storage manager to handle different storage backends
 #[derive(Clone)]
 pub struct StorageManager {
-    operator: Operator,
-    config: StorageConfig,
+    operator: Option<Operator>,
 }
 
 impl StorageManager {
     pub async fn new(config: StorageConfig) -> Result<Self> {
         let operator = match &config.backend {
-            StorageBackend::Local => build_fs_operator(&config.workspace)?,
+            StorageBackend::Local => {
+                info!("Using local filesystem storage - no OpenDAL operator needed");
+                None
+            }
             StorageBackend::S3 {
                 bucket,
                 endpoint,
                 region,
                 access_key_id,
                 secret_access_key,
-            } => build_s3_operator(
-                bucket,
-                endpoint.as_deref(),
-                region.as_deref(),
-                access_key_id,
-                secret_access_key,
-            )?,
+            } => {
+                let op = build_s3_operator(
+                    bucket,
+                    endpoint.as_deref(),
+                    region.as_deref(),
+                    access_key_id,
+                    secret_access_key,
+                )?;
+                Some(op)
+            }
         };
 
-        Ok(Self { operator, config })
+        Ok(Self { operator })
     }
 
-    pub fn operator(&self) -> &Operator {
-        &self.operator
-    }
-
-    pub fn is_remote(&self) -> bool {
-        matches!(self.config.backend, StorageBackend::S3 { .. })
+    pub fn operator(&self) -> Option<&Operator> {
+        self.operator.as_ref()
     }
 
     pub async fn upload_directory(&self, local_path: &Path, remote_prefix: &str) -> Result<()> {
-        if !self.is_remote() {
-            // For local storage, no upload needed
-            info!("Using local storage, skipping upload");
-            return Ok(());
+        match &self.operator {
+            None => {
+                // For local storage, no upload needed
+                info!("Using local storage, skipping upload");
+                Ok(())
+            }
+            Some(operator) => {
+                info!(
+                    local_path = ?local_path,
+                    remote_prefix = %remote_prefix,
+                    "Starting directory upload to remote storage"
+                );
+
+                upload_tree_streaming(
+                    operator.clone(),
+                    local_path,
+                    remote_prefix,
+                    8, // concurrency
+                )
+                .await
+            }
         }
-
-        info!(
-            local_path = ?local_path,
-            remote_prefix = %remote_prefix,
-            "Starting directory upload to remote storage"
-        );
-
-        upload_tree_streaming(
-            self.operator.clone(),
-            local_path,
-            remote_prefix,
-            8, // concurrency
-        )
-        .await
     }
-}
-
-fn build_fs_operator(root: &Path) -> Result<Operator> {
-    info!(root = ?root, "Building filesystem operator");
-
-    let mut builder = Fs::default();
-    builder = builder.root(
-        root.to_str()
-            .ok_or_else(|| anyhow!("Invalid root path: {:?}", root))?,
-    );
-
-    Ok(Operator::new(builder)?
-        .layer(RetryLayer::new().with_max_times(3))
-        .finish())
 }
 
 fn build_s3_operator(
@@ -195,15 +185,15 @@ pub async fn upload_tree_streaming(
             async move {
                 match rpath {
                     Ok(path) => {
-                        if let Err(err) = upload_one(&op, &root, &path, &prefix).await {
-                            error!(?path, ?err, "ERR upload");
+                        if let Err(error) = upload_one(&op, &root, &path, &prefix).await {
+                            error!(?path, ?error, "ERR upload");
                             error_count.fetch_add(1, Ordering::Relaxed);
                         } else {
                             success_count.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    Err(err) => {
-                        error!(?err, "ERR walk");
+                    Err(error) => {
+                        error!(?error, "ERR walk");
                         error_count.fetch_add(1, Ordering::Relaxed);
                     }
                 }
