@@ -38,10 +38,10 @@ impl Job for UploadJob {
     fn gen_job(&self, state: AppState) -> TokioJoinHandle<anyhow::Result<()>> {
         let upload_path = self.video_path(state.videos_dir());
         let job_id = self.id.clone();
-        let storage_manager = state.storage_manager.clone();
 
         tokio::spawn(async move {
-            storage_manager
+            state
+                .storage_manager
                 .upload_directory(&upload_path, "videos")
                 .await
                 .map(|_| {

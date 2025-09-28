@@ -1,0 +1,61 @@
+[package]
+name = "video-storage-core"
+version.workspace = true
+edition.workspace = true
+
+[features]
+debug = []
+
+[[bin]]
+name = "video-storage"
+path = "src/main.rs"
+
+[dependencies]
+# Core dependencies
+bytes.workspace = true
+ffmpeg-next.workspace = true
+ez-ffmpeg.workspace = true
+futures.workspace = true
+mime_guess.workspace = true
+
+# Logging and serialization
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_qs.workspace = true
+
+# Async runtime and utilities
+anyhow.workspace = true
+async-channel.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+
+# Configuration and CLI
+clap.workspace = true
+toml.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+walkdir.workspace = true
+
+# Storage and crypto
+opendal.workspace = true
+aes-gcm.workspace = true
+rand.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+video-storage-test-server = { path = "../test-server" }
+tower = "0.5"
+portpicker = "0.1"
+uuid = { version = "1.10", features = ["v4"] }
+tempfile = "3.8"
+warp = "0.3"
+urlencoding = "2.1"

@@ -7,7 +7,7 @@ use crate::app_state::AppState;
 use std::{ops::Deref, sync::Arc, time::Duration};
 use tokio::sync::Semaphore as TokioSemaphore;
 use tokio::task::JoinHandle as TokioJoinHandle;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 // Re-exports for convenience
 pub use convert::ConvertJob;
@@ -92,7 +92,7 @@ pub trait Job: Clone + Sized + Send + Sync + 'static {
             };
 
             if let Some(retry_interval) = self.wait_for_retry() {
-                error!(?error, %job_id, kind = self.kind(), "Job process failed, wait for retry");
+                warn!(?error, %job_id, kind = self.kind(), "Job process failed, wait for retry");
                 tokio::time::sleep(retry_interval).await;
                 JobResult::Retry(job)
             } else {

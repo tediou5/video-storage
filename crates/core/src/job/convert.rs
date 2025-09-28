@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write as _;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle as TokioJoinHandle;
@@ -55,6 +56,7 @@ impl From<&Scale> for (u32, u32) {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(transparent)]
 pub struct Scales(Vec<Scale>);
 
 impl Scales {
@@ -64,6 +66,10 @@ impl Scales {
 
     pub fn from_vec(scales: Vec<Scale>) -> Self {
         Self(scales)
+    }
+
+    pub fn add_scale(&mut self, width: u32, height: u32) {
+        self.0.push(Scale::new(width, height));
     }
 
     pub fn skip_serialize(&self) -> bool {
@@ -106,11 +112,20 @@ pub struct ConvertJob {
     #[serde(default)]
     #[serde(skip_serializing_if = "Scales::skip_serialize")]
     pub scales: Scales,
+
+    #[serde(default)]
+    #[serde(skip)]
+    pub retry_times: Arc<AtomicU8>,
 }
 
 impl ConvertJob {
     pub fn new(id: String, crf: u8, scales: Scales) -> Self {
-        Self { id, crf, scales }
+        Self {
+            id,
+            crf,
+            scales,
+            retry_times: Arc::new(AtomicU8::new(0)),
+        }
     }
 
     pub fn id(&self) -> &str {
@@ -182,7 +197,7 @@ impl Job for ConvertJob {
 
             let next_c = next.clone();
             let state_c = state.clone();
-            tokio::task::spawn(async move { state_c.jobs_manager.add(&next_c).await });
+            tokio::spawn(async move { state_c.jobs_manager.add(&next_c).await });
             Some(RawJob::new(next))
         } else {
             None
@@ -190,7 +205,13 @@ impl Job for ConvertJob {
     }
 
     fn wait_for_retry(&self) -> Option<Duration> {
-        Some(Duration::from_secs(15))
+        let retry_times = self.retry_times.load(Ordering::Acquire);
+        if retry_times < 5 {
+            self.retry_times.store(retry_times + 1, Ordering::Release);
+            Some(Duration::from_secs(15))
+        } else {
+            None
+        }
     }
 
     fn on_final_failure(&self) -> FailureJob {
@@ -218,6 +239,7 @@ pub fn convert(
         id: job_id,
         crf,
         scales,
+        ..
     } = job;
 
     let outputs = scales
@@ -581,6 +603,7 @@ mod tests {
             id: "test-job-4".to_string(),
             crf: 20,
             scales: Scales::new(),
+            retry_times: Arc::new(0.into()),
         };
 
         let json = serde_json::to_string(&job).unwrap();
@@ -598,6 +621,7 @@ mod tests {
             id: "test-job-5".to_string(),
             crf: 18,
             scales: Scales::from_vec(Vec::new()),
+            retry_times: Arc::new(0.into()),
         };
 
         let json = serde_json::to_string(&job).unwrap();
@@ -620,6 +644,7 @@ mod tests {
             id: "test-job-6".to_string(),
             crf: 22,
             scales: Scales::from_vec(custom_scales),
+            retry_times: Arc::new(0.into()),
         };
 
         let json = serde_json::to_string(&job).unwrap();
@@ -641,6 +666,7 @@ mod tests {
             id: "round-trip-1".to_string(),
             crf: 24,
             scales: Scales::new(),
+            retry_times: Arc::new(0.into()),
         };
 
         let json = serde_json::to_string(&original_job).unwrap();
@@ -661,6 +687,7 @@ mod tests {
             id: "round-trip-2".to_string(),
             crf: 26,
             scales: Scales::from_vec(custom_scales.clone()),
+            retry_times: Arc::new(0.into()),
         };
 
         let json = serde_json::to_string(&original_job).unwrap();

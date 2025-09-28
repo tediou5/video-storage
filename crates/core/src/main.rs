@@ -1,5 +1,5 @@
 use ffmpeg_next::{self as ffmpeg};
-use video_storage::Config;
+use video_storage_core::Config;
 
 #[tokio::main]
 async fn main() {
@@ -8,5 +8,5 @@ async fn main() {
 
     // Load configuration from CLI and/or config file
     let config = Config::load().expect("Failed to load configuration");
-    video_storage::run(config).await
+    video_storage_core::run(config).await
 }

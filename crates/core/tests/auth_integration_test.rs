@@ -1,203 +1,12 @@
-use ffmpeg_next as ffmpeg;
-use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::OnceCell;
+use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tokio::time::sleep;
-use video_storage::Config;
-
-static SERVER: OnceCell<TestServer> = OnceCell::const_new();
-
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-struct CreateClaimRequest {
-    pub asset_id: String,
-    pub nbf_unix: Option<u32>,
-    pub exp_unix: u32,
-    #[serde(default)]
-    pub window_len_sec: Option<u16>,
-    #[serde(default)]
-    pub max_kbps: Option<u16>,
-    #[serde(default)]
-    pub max_concurrency: Option<u16>,
-    #[serde(default)]
-    pub allowed_widths: Option<Vec<u16>>,
-}
-
-#[derive(serde::Deserialize)]
-struct CreateClaimResponse {
-    pub token: String,
-}
-
-/// Test harness that manages the server process
-struct TestServer {
-    _handle: JoinHandle<()>,
-    e_port: u16,
-    i_port: u16,
-}
-
-impl TestServer {
-    /// Start the server in a subprocess
-    async fn start() -> Self {
-        // Only open when debugging
-        tracing_subscriber::fmt::init();
-
-        // Initialize ffmpeg once
-        static FFMPEG_INIT: std::sync::Once = std::sync::Once::new();
-        FFMPEG_INIT.call_once(|| {
-            ffmpeg::init().unwrap();
-        });
-
-        // Find an available port
-        let e_port = portpicker::pick_unused_port().expect("No available port");
-        let i_port = portpicker::pick_unused_port().expect("No available port");
-
-        let test_id = uuid::Uuid::new_v4().to_string();
-        let workspace = format!("/tmp/test-workspace-{test_id}");
-
-        let config = Config {
-            listen_on_port: e_port,
-            internal_port: i_port,
-            workspace: workspace.clone(),
-            ..Default::default()
-        };
-
-        // Spawn the server in a separate thread with its own runtime
-        let handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async move {
-                video_storage::run(config).await;
-            });
-        });
-
-        let server = TestServer {
-            _handle: handle,
-            e_port,
-            i_port,
-        };
-        // Wait for server to be ready
-        let client = server.client();
-
-        sleep(Duration::from_millis(1)).await;
-        // Poll until server is ready
-        for _ in 0..200 {
-            if let Ok(response) = client
-                .get(format!("http://127.0.0.1:{i_port}/waitlist"))
-                .send()
-                .await
-                && response.status().is_success()
-            {
-                break;
-            }
-
-            sleep(Duration::from_millis(10)).await;
-        }
-
-        server
-    }
-
-    fn ext_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.e_port)
-    }
-
-    fn int_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.i_port)
-    }
-
-    fn client(&self) -> reqwest::Client {
-        reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(3))
-            .build()
-            .unwrap()
-    }
-
-    /// Create a claim token via HTTP API
-    async fn create_claim(
-        &self,
-        client: &reqwest::Client,
-        asset_id: &str,
-        allowed_widths: Vec<u16>,
-        exp_offset: i64,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        self.create_claim_with_concurrency(
-            client,
-            asset_id,
-            Some(allowed_widths),
-            exp_offset,
-            Some(3),
-        )
-        .await
-    }
-
-    /// Create a claim token via HTTP API
-    async fn create_claim_with_concurrency(
-        &self,
-        client: &reqwest::Client,
-        asset_id: &str,
-        allowed_widths: Option<Vec<u16>>,
-        exp_offset: i64,
-        max_concurrency: Option<u16>,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as u32;
-
-        let request = CreateClaimRequest {
-            asset_id: asset_id.to_string(),
-            nbf_unix: Some(now - 1), // Valid from 1 minute ago
-            exp_unix: (now as i64 + exp_offset) as u32,
-            window_len_sec: Some(300),
-            max_kbps: Some(5000),
-            max_concurrency,
-            allowed_widths,
-        };
-
-        let url = format!("{}/claims", self.int_url());
-        let response = client.post(&url).json(&request).send().await?;
-
-        if !response.status().is_success() {
-            return Err(format!(
-                "Failed to create claim: {}, url: {url}, request: {request:?}",
-                response.status(),
-            )
-            .into());
-        }
-
-        let claim_response: CreateClaimResponse = response.json().await?;
-        Ok(claim_response.token)
-    }
-
-    /// Make an authenticated GET request
-    async fn get_with_auth(
-        &self,
-        client: &reqwest::Client,
-        path: &str,
-        token: &str,
-    ) -> reqwest::Response {
-        client
-            .get(format!("{}{}", self.ext_url(), path))
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await
-            .unwrap()
-    }
-
-    /// Make an unauthenticated GET request
-    async fn get_without_auth(&self, client: &reqwest::Client, path: &str) -> reqwest::Response {
-        client
-            .get(format!("{}{}", self.int_url(), path))
-            .send()
-            .await
-            .unwrap()
-    }
-}
+use video_storage_test_server::{CreateClaimRequest, CreateClaimResponse, TestServer};
 
 #[tokio::test]
 async fn test_server_starts_successfully() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Check that waitlist endpoint works
@@ -212,7 +21,7 @@ async fn test_server_starts_successfully() {
 
 #[tokio::test]
 async fn test_no_auth_fails() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Request from internal URL should fail
@@ -241,7 +50,7 @@ async fn test_no_auth_fails() {
 
 #[tokio::test]
 async fn test_valid_auth_succeeds() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Create a valid claim
@@ -259,7 +68,7 @@ async fn test_valid_auth_succeeds() {
 
 #[tokio::test]
 async fn test_asset_id_mismatch() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Create a claim for video1
@@ -277,7 +86,7 @@ async fn test_asset_id_mismatch() {
 
 #[tokio::test]
 async fn test_expired_token() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Create an expired claim (expired 1 hour ago)
@@ -297,7 +106,7 @@ async fn test_expired_token() {
 
 #[tokio::test]
 async fn test_width_restrictions() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Create a claim that only allows 720 and 1080 widths
@@ -327,7 +136,7 @@ async fn test_width_restrictions() {
 
 #[tokio::test]
 async fn test_empty_allowed_widths_allows_all() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Create a claim with empty allowed_widths (allows all widths)
@@ -351,7 +160,7 @@ async fn test_empty_allowed_widths_allows_all() {
 
 #[tokio::test]
 async fn test_time_window_for_segments() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Create a claim with 120 second window (30 segments at 4 seconds each)
@@ -395,7 +204,7 @@ async fn test_time_window_for_segments() {
 
 #[tokio::test]
 async fn test_invalid_claim_token() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Test with malformed token
@@ -419,7 +228,7 @@ async fn test_invalid_claim_token() {
 
 #[tokio::test]
 async fn test_width_restrictions_with_segments() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Create a claim that only allows 720 width
@@ -449,7 +258,7 @@ async fn test_width_restrictions_with_segments() {
 
 #[tokio::test]
 async fn test_multiple_width_restrictions() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Create a claim that allows multiple specific widths
@@ -485,7 +294,7 @@ async fn test_multiple_width_restrictions() {
 
 #[tokio::test]
 async fn test_concurrent_requests() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Create a valid claim
@@ -529,7 +338,7 @@ async fn test_concurrent_requests() {
 
 #[tokio::test]
 async fn test_claim_creation_validation() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     // Test with empty asset_id
@@ -580,7 +389,7 @@ async fn test_claim_creation_validation() {
 
 #[tokio::test]
 async fn test_claim_with_optional_parameters() {
-    let server = SERVER.get_or_init(TestServer::start).await;
+    let server = TestServer::shared().await;
     let client = server.client();
 
     let now = SystemTime::now()

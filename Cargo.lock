@@ -2342,6 +2342,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_qs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3faaf9e727533a19351a43cc5a8de957372163c7d35cc48c90b75cdda13c352"
+dependencies = [
+ "percent-encoding",
+ "serde",
+ "thiserror 2.0.15",
+]
+
+[[package]]
 name = "serde_spanned"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2924,6 +2935,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "urlencoding"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
+
+[[package]]
 name = "utf-8"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2972,7 +2989,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "video-storage"
+name = "video-storage-core"
 version = "0.3.0"
 dependencies = [
  "aes-gcm",
@@ -2996,7 +3013,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "serde_urlencoded",
+ "serde_qs",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -3007,8 +3024,27 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "uuid",
+ "video-storage-test-server",
  "walkdir",
+ "warp",
+]
+
+[[package]]
+name = "video-storage-test-server"
+version = "0.3.0"
+dependencies = [
+ "ffmpeg-next",
+ "portpicker",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_qs",
+ "tokio",
+ "tracing-subscriber",
+ "urlencoding",
+ "video-storage-core",
  "warp",
 ]
 

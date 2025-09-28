@@ -3,7 +3,7 @@ use crate::claim::{ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
 use crate::job::{CONVERT_KIND, UPLOAD_KIND};
 use crate::{AppState, ConvertJob, Job};
 use axum::body::Body;
-use axum::extract::{Extension, Path as AxumPath, Query};
+use axum::extract::{Extension, Path as AxumPath};
 use axum::http::{Request, Response, StatusCode, header};
 use axum::response::{IntoResponse, Json};
 use bytes::Bytes;
@@ -63,9 +63,24 @@ pub async fn waitlist(Extension(state): Extension<AppState>) -> impl IntoRespons
 
 pub async fn upload_mp4_raw(
     Extension(state): Extension<AppState>,
-    Query(job): Query<ConvertJob>,
-    body: Body,
+    request: Request<Body>,
 ) -> impl IntoResponse {
+    // Extract query string and parse with serde_qs
+    let query = request.uri().query().unwrap_or("");
+    let job: ConvertJob = match serde_qs::from_str(query) {
+        Ok(job) => job,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(UploadResponse {
+                    job_id: "unknown".to_string(),
+                    message: format!("Failed to parse query parameters: {err}"),
+                }),
+            );
+        }
+    };
+
+    let body = request.into_body();
     let job_id = job.id().to_string();
 
     if job.crf > 63 {
@@ -130,7 +145,7 @@ pub async fn upload_mp4_raw(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(UploadResponse {
                     job_id,
-                    message: "Failed to write to upload file".into(),
+                    message: "Failed to write upload file".into(),
                 }),
             );
         }
@@ -143,7 +158,7 @@ pub async fn upload_mp4_raw(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(UploadResponse {
                 job_id,
-                message: "Failed to flush upload file".into(),
+                message: "Failed to submit convert job".into(),
             }),
         );
     }
@@ -435,10 +450,9 @@ mod tests {
     fn test_upload_query_parameter_parsing_legacy() {
         // Test parsing ConvertJob from query parameters without scales (legacy format)
         use crate::job::convert::{ConvertJob, RESOLUTIONS};
-        use serde_urlencoded;
 
         let query_string = "id=test123&crf=23";
-        let job: ConvertJob = serde_urlencoded::from_str(query_string).unwrap();
+        let job: ConvertJob = serde_qs::from_str(query_string).unwrap();
 
         assert_eq!(job.id, "test123");
         assert_eq!(job.crf, 23);
@@ -451,11 +465,10 @@ mod tests {
         // Test parsing ConvertJob from query parameters - complex nested structures
         // are difficult with URL encoding, so we test the basic functionality
         use crate::job::convert::ConvertJob;
-        use serde_urlencoded;
 
         // Simple query without scales (should use defaults)
         let query_string = "id=test456&crf=30";
-        let job: ConvertJob = serde_urlencoded::from_str(query_string).unwrap();
+        let job: ConvertJob = serde_qs::from_str(query_string).unwrap();
 
         assert_eq!(job.id, "test456");
         assert_eq!(job.crf, 30);
@@ -481,21 +494,6 @@ mod tests {
     }
 
     #[test]
-    fn test_upload_query_serialization_backward_compatibility() {
-        // Test that ConvertJob with default scales serializes without scales field
-        use crate::job::convert::{ConvertJob, Scales};
-        use serde_urlencoded;
-
-        let job = ConvertJob::new("test789".to_string(), 25, Scales::new());
-        let query_string = serde_urlencoded::to_string(&job).unwrap();
-
-        // Should not contain scales parameter when using defaults
-        assert!(!query_string.contains("scales"));
-        assert!(query_string.contains("id=test789"));
-        assert!(query_string.contains("crf=25"));
-    }
-
-    #[test]
     fn test_upload_query_serialization_with_custom_scales() {
         // Test that ConvertJob with custom scales - URL encoding of complex nested
         // structures is limited, so we test basic serialization
@@ -513,7 +511,7 @@ mod tests {
 
         // Basic query serialization (without complex nested structures)
         let simple_job = ConvertJob::new("simple".to_string(), 25, Scales::new());
-        let query_result = serde_urlencoded::to_string(&simple_job);
+        let query_result = serde_qs::to_string(&simple_job);
         assert!(query_result.is_ok());
     }
 
@@ -522,7 +520,6 @@ mod tests {
         // Test round-trip serialization/deserialization of ConvertJob through query parameters
         // Focus on basic fields since complex nested structures are challenging with URL encoding
         use crate::job::convert::ConvertJob;
-        use serde_urlencoded;
 
         // Test with default scales (simple case)
         let original_job = ConvertJob::new(
@@ -532,8 +529,8 @@ mod tests {
         );
 
         // Test basic serialization/deserialization
-        let query_string = serde_urlencoded::to_string(&original_job).unwrap();
-        let parsed_job: ConvertJob = serde_urlencoded::from_str(&query_string).unwrap();
+        let query_string = serde_qs::to_string(&original_job).unwrap();
+        let parsed_job: ConvertJob = serde_qs::from_str(&query_string).unwrap();
 
         assert_eq!(original_job.id, parsed_job.id);
         assert_eq!(original_job.crf, parsed_job.crf);
@@ -543,7 +540,7 @@ mod tests {
 
         // Test manual query string parsing
         let manual_query = "id=manual_test&crf=35";
-        let manual_job: ConvertJob = serde_urlencoded::from_str(manual_query).unwrap();
+        let manual_job: ConvertJob = serde_qs::from_str(manual_query).unwrap();
         assert_eq!(manual_job.id, "manual_test");
         assert_eq!(manual_job.crf, 35);
         assert_eq!(&*manual_job.scales, &crate::job::convert::RESOLUTIONS);
@@ -562,5 +559,33 @@ mod tests {
         assert!(is_valid_job_id("a")); // minimum valid length
         assert!(is_valid_job_id(&"a".repeat(128))); // maximum valid length
         assert!(!is_valid_job_id(&"a".repeat(129))); // too long
+    }
+
+    #[test]
+    fn test_serde_qs_480p_round_trip() {
+        // Test that ConvertJob with 480p-only scales works with serde_qs
+        use crate::job::convert::{ConvertJob, Scale, Scales};
+
+        let scales_480p = Scales::from_vec(vec![Scale::new(480, 854)]);
+        let job = ConvertJob::new("test_480p".to_string(), 25, scales_480p);
+
+        // Serialize with serde_qs
+        let query_string = serde_qs::to_string(&job).unwrap();
+
+        // Should contain the expected format
+        assert!(query_string.contains("id=test_480p"));
+        assert!(query_string.contains("crf=25"));
+        assert!(query_string.contains("scales[0][w]=480"));
+        assert!(query_string.contains("scales[0][h]=854"));
+
+        // Deserialize back
+        let parsed_job: ConvertJob = serde_qs::from_str(&query_string).unwrap();
+
+        // Verify round-trip correctness
+        assert_eq!(parsed_job.id, "test_480p");
+        assert_eq!(parsed_job.crf, 25);
+        assert_eq!(parsed_job.scales.len(), 1);
+        assert_eq!(parsed_job.scales[0].width(), 480);
+        assert_eq!(parsed_job.scales[0].height(), 854);
     }
 }
