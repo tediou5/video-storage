@@ -1,12 +1,17 @@
-[package]
-name = "video-storage"
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/test-server",
+    # "crates/integration-tests",
+]
+
+[workspace.package]
 version = "0.3.0"
 edition = "2024"
 
-[features]
-debug = []
-
-[dependencies]
+[workspace.dependencies]
+# Core dependencies
 bytes = "1"
 ffmpeg-next = { version = "7.1.0", features = [
     "build",
@@ -21,11 +26,14 @@ ez-ffmpeg = { version = "0.5.4" }
 futures = "0.3"
 mime_guess = "2"
 
+# Logging and serialization
 tracing = "0.1"
 tracing-subscriber = { version = "0.3" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_qs = "0.15.0"
 
+# Async runtime and utilities
 anyhow = "1.0"
 async-channel = "2.3.1"
 async-stream = "0.3"
@@ -35,11 +43,15 @@ tokio-util = { version = "0.7", features = ["io", "compat"] }
 tokio-stream = "0.1.17"
 tower-http = { version = "0.6.4", features = ["cors", "trace"] }
 hyper = "1.6.0"
+
+# Configuration and CLI
 clap = { version = "4.5.38", features = ["derive"] }
 toml = "0.8"
 reqwest = { version = "0.12", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2.5.0"
+
+# Storage and crypto
 opendal = { version = "0.54", features = ["services-s3", "services-fs", "layers-mime-guess"] }
 aes-gcm = "0.10"
 rand = "0.8"
@@ -47,7 +59,5 @@ base64 = "0.22"
 thiserror = "1.0"
 parking_lot = "0.12.4"
 
-[dev-dependencies]
-tower = "0.5"
-portpicker = "0.1"
-uuid = { version = "1.10", features = ["v4"] }
+[profile.test]
+inherits = "release"

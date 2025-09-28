@@ -98,7 +98,7 @@ curl -X POST http://localhost:32146/claims \
 
 #### 请求体
 
-- Content-Type: video/mp4 或 application/octet-stream
+- Content-Type: application/octet-stream
 - Body: MP4 视频文件的二进制数据
 
 #### 响应格式
@@ -131,7 +131,7 @@ curl -X POST http://localhost:32146/claims \
 ```bash
 # 上传视频文件进行转换，CRF=23（适中质量）
 curl -X POST "http://localhost:32146/upload?id=video123&crf=23" \
-  -H "Content-Type: video/mp4" \
+  -H "Content-Type: application/octet-stream" \
   --data-binary @input.mp4
 ```
 
@@ -273,7 +273,7 @@ curl -H "Authorization: Bearer your_token_here" \
 ```bash
 # 上传 MP4 视频进行转换
 curl -X POST "http://localhost:32146/upload?id=myvideo&crf=23" \
-  -H "Content-Type: video/mp4" \
+  -H "Content-Type: application/octet-stream" \
   --data-binary @video.mp4
 
 # 检查任务队列

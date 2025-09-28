@@ -36,13 +36,7 @@ pub use job::{ConvertJob, Job, JobResult, UploadJob};
 pub use opendal::{StorageBackend, StorageConfig, StorageManager};
 pub use stream_map::StreamMap;
 
-pub const RESOLUTIONS: [(u32, u32); 3] = [(720, 1280), (540, 960), (480, 854)];
-pub const BANDWIDTHS: [u32; 3] = [2500000, 1500000, 1000000];
-
 pub async fn run(config: Config) {
-    // Ensure we're in a proper async context by yielding once
-    tokio::task::yield_now().await;
-
     // Extract configuration values
     let listen_on_port = config.listen_on_port;
     let internal_port = config.internal_port;

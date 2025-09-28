@@ -167,6 +167,7 @@ impl AppState {
                         match result {
                             JobResult::Done => {
                                 info!(id, "Job completed successfully");
+                                this.jobs_manager.remove(&id).await;
                                 continue;
                             },
                             JobResult::Next(next_job) => {

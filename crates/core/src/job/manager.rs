@@ -80,25 +80,21 @@ impl JobSetManager {
 
         // remove any existing job with the same ID
         jobs.retain(|j| j.id() != job.id());
-
         jobs.push(job);
+
         if let Err(error) = self.save(&jobs).await {
             error!(?kind, ?error, "Failed to save jobs file after adding a job");
         }
     }
 
     /// Removes a job from the set by its ID and persists the change.
-    pub async fn remove(&self, job_id: &str) {
-        tracing::debug!(id = %job_id, "Removing job");
+    pub async fn remove(&self, id: &str) {
+        tracing::debug!(id, "Removing job");
         let mut jobs = self.jobs.lock().await;
-        let original_len = jobs.len();
-        jobs.retain(|j| j.id() != job_id);
+        jobs.retain(|j| j.id() != id);
 
-        // Only save if a job was actually removed.
-        if jobs.len() < original_len
-            && let Err(error) = self.save(&jobs).await
-        {
-            error!(?error, "Failed to save jobs file after removing a job");
+        if let Err(error) = self.save(&jobs).await {
+            error!(id, ?error, "Failed to save jobs file after removing a job");
         }
     }
 }

@@ -1,0 +1,17 @@
+[package]
+name = "video-storage-test-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+video-storage-core = { path = "../core" }
+tokio.workspace = true
+reqwest.workspace = true
+warp = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+serde_qs.workspace = true
+ffmpeg-next.workspace = true
+tracing-subscriber.workspace = true
+portpicker = "0.1"
+urlencoding = "2.1"
