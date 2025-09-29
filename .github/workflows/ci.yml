@@ -9,7 +9,7 @@ on:
 env:
     CARGO_TERM_COLOR: always
     RUST_BACKTRACE: 1
-    RUST_VERSION: nightly-2024-09-15
+    RUST_VERSION: nightly-2024-09-25
 
 jobs:
     # Format check - runs independently, doesn't need build
