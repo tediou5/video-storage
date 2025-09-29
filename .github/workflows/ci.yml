@@ -9,7 +9,7 @@ on:
 env:
     CARGO_TERM_COLOR: always
     RUST_BACKTRACE: 1
-    RUST_VERSION: nightly-2024-09-15
+    RUST_VERSION: nightly-2024-09-25
 
 jobs:
     # Format check - runs independently, doesn't need build
@@ -47,6 +47,11 @@ jobs:
 
         steps:
             - uses: actions/checkout@v4
+
+            # Make builds portable on ubuntu-22.04
+            - name: Make builds portable on ubuntu-22.04
+              if: matrix.os-name == 'Ubuntu 22.04'
+              run: echo 'RUSTFLAGS=-C target-cpu=x86-64 -C target-feature=+sse2' >> $GITHUB_ENV
 
             # Install build tools for Rocky Linux
             - name: Install build essentials (Rocky Linux)

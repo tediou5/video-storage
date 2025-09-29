@@ -1,17 +1,25 @@
-use crate::api::routes::err_response;
-use crate::claim::bucket::ClaimBucketManager;
-use crate::claim::{ClaimManager, validate_claim_time_and_resource};
+use crate::{ClaimManager, validate_claim_time_and_resource};
 use axum::extract::{Path, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use serde_json::json;
 use tracing::{debug, warn};
+
+/// Create an error response
+fn err_response(status: StatusCode, message: &str) -> Response {
+    let body = json!({
+        "error": message,
+        "status": status.as_u16()
+    });
+
+    (status, body.to_string()).into_response()
+}
 
 /// Claim verification state to be passed to handlers
 #[derive(Clone)]
 pub struct ClaimState {
     pub claim_manager: ClaimManager,
-    pub bucket_manager: ClaimBucketManager,
 }
 
 /// Middleware for claim-based authentication and authorization
@@ -41,8 +49,8 @@ pub async fn claim_auth_middleware(
     };
 
     // Verify the claim token
-    let claim_payload = match claim_state.claim_manager.verify_claim(&token) {
-        Ok(payload) => payload,
+    let (claim_payload, bucket_key) = match claim_state.claim_manager.verify_claim(&token) {
+        Ok((payload, key)) => (payload, key),
         Err(error) => {
             warn!(?error, "Failed to verify claim");
             return (error.to_err_code(), error.to_string()).into_response();
@@ -83,12 +91,9 @@ pub async fn claim_auth_middleware(
     );
 
     // Get or create rate limit bucket for this claim
-    let bucket = claim_state.bucket_manager.get_or_create_bucket(
-        &token,
-        claim_payload.exp_unix,
-        claim_payload.max_kbps,
-        claim_payload.max_concurrency,
-    );
+    let bucket = claim_state
+        .claim_manager
+        .get_or_create_bucket(&bucket_key, &claim_payload);
 
     // Try to acquire a connection slot for concurrency control
     let Ok(_guard) = bucket.try_acquire_connection() else {
@@ -105,10 +110,10 @@ pub async fn claim_auth_middleware(
     };
 
     // Store bucket in extensions for the route handler to use
-    req.extensions_mut().insert(bucket.bucket);
+    req.extensions_mut().insert(bucket);
 
     // Update last access time
-    claim_state.bucket_manager.touch(&token);
+    claim_state.claim_manager.touch_bucket(&bucket_key);
 
     // Continue to the actual handler
     next.run(req).await
@@ -193,16 +198,5 @@ mod tests {
 
         // Invalid format
         assert!(parse_video_filename("invalid.txt").is_none());
-    }
-
-    #[test]
-    fn test_segment_window_calculation() {
-        // With 4-second segments, 120-second window allows segments 0-30
-        let max_segment = 120 / 4; // Using constant 4 directly
-        assert_eq!(max_segment, 30);
-
-        // Segment 29 should be allowed (29 * 4 = 116 seconds)
-        // Segment 30 should be allowed (30 * 4 = 120 seconds, at boundary)
-        // Segment 31 should NOT be allowed (31 * 4 = 124 seconds)
     }
 }

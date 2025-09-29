@@ -1,5 +1,3 @@
-use crate::api::token_bucket::TokenBucket;
-use crate::claim::{ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
 use crate::job::{CONVERT_KIND, UPLOAD_KIND};
 use crate::{AppState, ConvertJob, Job};
 use axum::body::Body;
@@ -18,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncSeekExt;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, warn};
+use video_storage_claim::{ClaimBucket, ClaimPayloadV1, CreateClaimRequest, CreateClaimResponse};
 
 #[derive(Serialize, Deserialize)]
 pub struct UploadResponse {
@@ -179,7 +178,7 @@ async fn try_serve_from_filesystem(
     path: PathBuf,
     start: u64,
     end: u64,
-    bucket: TokenBucket,
+    bucket: ClaimBucket,
 ) -> anyhow::Result<impl futures::Stream<Item = Result<Bytes, IoError>> + Send> {
     let mut fh = tokio::fs::File::open(&path).await?;
 
@@ -204,7 +203,7 @@ async fn try_serve_from_s3(
     start: u64,
     end: u64,
     operator: Operator,
-    bucket: TokenBucket,
+    bucket: ClaimBucket,
 ) -> anyhow::Result<impl futures::Stream<Item = Result<Bytes, IoError>> + Send> {
     debug!(%s3_key, "Attempting to fetch from S3");
 
@@ -231,7 +230,7 @@ async fn try_serve_from_s3(
 
 pub async fn serve_video(
     Extension(state): Extension<AppState>,
-    Extension(bucket): Extension<TokenBucket>,
+    Extension(bucket): Extension<ClaimBucket>,
     AxumPath(filename): AxumPath<String>,
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
@@ -280,7 +279,7 @@ async fn server_file_with_bucket(
     s3_key: String,
     filename: String,
     req: Request<Body>,
-    bucket: TokenBucket,
+    bucket: ClaimBucket,
 ) -> Result<Response<Body>, Infallible> {
     let maybe_filesize = if let Ok(metadata) = tokio::fs::metadata(&local_path).await {
         Some((metadata.len(), false))

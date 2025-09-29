@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 video-storage-core = { path = "../core" }
+video-storage-claim = { path = "../claim" }
 tokio.workspace = true
 reqwest.workspace = true
 warp = "0.3"

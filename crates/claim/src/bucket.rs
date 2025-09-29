@@ -1,10 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-use tokio::time::{Instant, sleep};
+use std::time::{Duration, Instant};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::sleep;
 use tracing::trace;
 
 /// Internal state for the token bucket
+#[derive(Debug)]
 struct TokenBucketInner {
     /// Current tokens (in micro-units: 1,000,000 = 1 token)
     tokens_micro: AtomicU64,
@@ -16,14 +18,7 @@ struct TokenBucketInner {
     base_instant: Instant,
 }
 
-/// Token bucket for rate limiting
-/// Uses atomic operations for lock-free concurrent access
-#[derive(Clone)]
-pub struct TokenBucket {
-    inner: Arc<TokenBucketInner>,
-}
-
-impl TokenBucket {
+impl TokenBucketInner {
     /// Micro-units per token (for precision without floating point)
     const MICRO_UNITS: u64 = 1_000_000;
 
@@ -32,18 +27,16 @@ impl TokenBucket {
     /// # Arguments
     /// * `init_tokens` - Initial number of tokens (will be converted to micro-units)
     /// * `refill_rate` - Tokens per second (will be converted to micro-units)
-    pub fn new(init_tokens: f64, refill_rate: f64) -> Self {
+    fn new(init_tokens: f64, refill_rate: f64) -> Self {
         let tokens_micro = (init_tokens * Self::MICRO_UNITS as f64) as u64;
         let refill_rate_micro = (refill_rate * Self::MICRO_UNITS as f64) as u64;
         let base_instant = Instant::now();
 
-        TokenBucket {
-            inner: Arc::new(TokenBucketInner {
-                tokens_micro: AtomicU64::new(tokens_micro),
-                refill_rate_micro: AtomicU64::new(refill_rate_micro),
-                last_refill_ms: AtomicU64::new(0),
-                base_instant,
-            }),
+        TokenBucketInner {
+            tokens_micro: AtomicU64::new(tokens_micro),
+            refill_rate_micro: AtomicU64::new(refill_rate_micro),
+            last_refill_ms: AtomicU64::new(0),
+            base_instant,
         }
     }
 
@@ -51,8 +44,8 @@ impl TokenBucket {
     ///
     /// This method will wait if not enough tokens are available.
     /// If refill_rate is 0, it returns immediately without consuming tokens.
-    pub async fn consume(&self, amount: usize) {
-        let refill_rate_micro = self.inner.refill_rate_micro.load(Ordering::Relaxed);
+    async fn consume(&self, amount: usize) {
+        let refill_rate_micro = self.refill_rate_micro.load(Ordering::Relaxed);
 
         // If refill rate is 0, skip token consumption
         if refill_rate_micro == 0 {
@@ -65,7 +58,7 @@ impl TokenBucket {
         loop {
             // Get current time in milliseconds since base
             let now = Instant::now();
-            let now_ms = now.duration_since(self.inner.base_instant).as_millis() as u64;
+            let now_ms = now.duration_since(self.base_instant).as_millis() as u64;
 
             // Try to refill and consume atomically
             let result = self.try_consume_atomic(amount_micro, now_ms);
@@ -90,8 +83,8 @@ impl TokenBucket {
     ///
     /// Returns Ok(()) if successful, Err(wait_ms) if need to wait
     fn try_consume_atomic(&self, amount_micro: u64, now_ms: u64) -> Result<(), u64> {
-        let refill_rate_micro = self.inner.refill_rate_micro.load(Ordering::Acquire);
-        let last_ms = self.inner.last_refill_ms.load(Ordering::Acquire);
+        let refill_rate_micro = self.refill_rate_micro.load(Ordering::Acquire);
+        let last_ms = self.last_refill_ms.load(Ordering::Acquire);
 
         // Calculate elapsed time and potential new tokens
         let elapsed_ms = now_ms.saturating_sub(last_ms);
@@ -105,7 +98,7 @@ impl TokenBucket {
                 return Err(1);
             }
 
-            let current_tokens = self.inner.tokens_micro.load(Ordering::Acquire);
+            let current_tokens = self.tokens_micro.load(Ordering::Acquire);
             let updated_tokens = current_tokens.saturating_add(new_tokens_micro);
 
             // Check if we have enough tokens
@@ -119,13 +112,13 @@ impl TokenBucket {
                 };
 
                 // Best effort update of tokens and timestamp for next calculation
-                let _ = self.inner.tokens_micro.compare_exchange_weak(
+                let _ = self.tokens_micro.compare_exchange_weak(
                     current_tokens,
                     updated_tokens,
                     Ordering::Release,
                     Ordering::Relaxed,
                 );
-                self.inner.last_refill_ms.store(now_ms, Ordering::Release);
+                self.last_refill_ms.store(now_ms, Ordering::Release);
 
                 return Err(wait_ms);
             }
@@ -134,7 +127,7 @@ impl TokenBucket {
             let final_tokens = updated_tokens - amount_micro;
 
             // Use compare_exchange_weak for better performance in loops
-            match self.inner.tokens_micro.compare_exchange_weak(
+            match self.tokens_micro.compare_exchange_weak(
                 current_tokens,
                 final_tokens,
                 Ordering::Release,
@@ -142,7 +135,7 @@ impl TokenBucket {
             ) {
                 Ok(_) => {
                     // Successfully consumed tokens, update timestamp
-                    self.inner.last_refill_ms.store(now_ms, Ordering::Release);
+                    self.last_refill_ms.store(now_ms, Ordering::Release);
                     return Ok(());
                 }
                 Err(_) => {
@@ -173,15 +166,15 @@ impl TokenBucket {
     /// Get current number of tokens (for testing/debugging)
     /// This also triggers a refill calculation to get the most up-to-date value
     #[allow(dead_code)]
-    pub fn available_tokens(&self) -> f64 {
+    fn available_tokens(&self) -> f64 {
         // Get current time
         let now = Instant::now();
-        let now_ms = now.duration_since(self.inner.base_instant).as_millis() as u64;
+        let now_ms = now.duration_since(self.base_instant).as_millis() as u64;
 
         // Load current values
-        let current_tokens = self.inner.tokens_micro.load(Ordering::Relaxed);
-        let last_ms = self.inner.last_refill_ms.load(Ordering::Relaxed);
-        let refill_rate_micro = self.inner.refill_rate_micro.load(Ordering::Relaxed);
+        let current_tokens = self.tokens_micro.load(Ordering::Relaxed);
+        let last_ms = self.last_refill_ms.load(Ordering::Relaxed);
+        let refill_rate_micro = self.refill_rate_micro.load(Ordering::Relaxed);
 
         // Calculate elapsed time and new tokens
         let elapsed_ms = now_ms.saturating_sub(last_ms);
@@ -205,22 +198,143 @@ impl TokenBucket {
 
     /// Set refill rate (for dynamic adjustment)
     #[allow(dead_code)]
-    pub fn set_refill_rate(&self, rate: f64) {
+    fn set_refill_rate(&self, rate: f64) {
         let rate_micro = (rate * Self::MICRO_UNITS as f64) as u64;
-        self.inner
-            .refill_rate_micro
-            .store(rate_micro, Ordering::Relaxed);
+        self.refill_rate_micro.store(rate_micro, Ordering::Relaxed);
     }
+}
+
+#[derive(Debug)]
+struct ClaimBucketInner {
+    /// The actual token bucket for rate limiting (lock-free, cloneable)
+    bucket: TokenBucketInner,
+    /// Last access time for cleanup (wrapped in Arc for sharing)
+    last_access: AtomicU64,
+}
+
+impl ClaimBucketInner {
+    fn new(token_rate: f64) -> Self {
+        let bucket = TokenBucketInner::new(token_rate, token_rate);
+        let now_ms = Instant::now().elapsed().as_millis() as u64;
+
+        Self {
+            bucket,
+            last_access: AtomicU64::new(now_ms),
+        }
+    }
+
+    fn touch(&self) {
+        let now_ms = Instant::now().elapsed().as_millis() as u64;
+        self.last_access.store(now_ms, Ordering::Relaxed);
+    }
+
+    fn consume(&self, amount: usize) -> impl Future<Output = ()> {
+        self.bucket.consume(amount)
+    }
+
+    fn is_idle(&self, now_ms: u64, idle_threshold_ms: u64) -> bool {
+        let last_access_ms = self.last_access.load(Ordering::Relaxed);
+        let idle_ms = now_ms.saturating_sub(last_access_ms);
+        idle_ms > idle_threshold_ms
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ClaimBucket {
+    inner: Arc<ClaimBucketInner>,
+    /// Expiry time from the claim
+    exp_unix: u32,
+    /// Maximum bandwidth in kbps (0 = unlimited)
+    max_kbps: u16,
+    /// Maximum concurrent connections allowed
+    max_concurrency: u16,
+    permits: Arc<Semaphore>,
+}
+
+impl ClaimBucket {
+    /// Create a new ClaimBucket
+    pub fn new(token_rate: f64, exp_unix: u32, max_kbps: u16, max_concurrency: u16) -> Self {
+        Self {
+            inner: Arc::new(ClaimBucketInner::new(token_rate)),
+            exp_unix,
+            max_kbps,
+            max_concurrency,
+            permits: Arc::new(Semaphore::new(max_concurrency as usize)),
+        }
+    }
+
+    /// Try to acquire a connection slot for a claim
+    pub fn try_acquire_connection(&self) -> Result<Option<OwnedSemaphorePermit>, &'static str> {
+        if self.max_concurrency == 0 {
+            return Ok(None);
+        }
+
+        self.permits
+            .clone()
+            .try_acquire_owned()
+            .map(Some)
+            .map_err(|_| "Max concurrency exceeded")
+    }
+
+    /// Update last access time
+    pub fn touch(&self) {
+        self.inner.touch();
+    }
+
+    /// Consume tokens from the bucket
+    ///
+    /// This method will wait if not enough tokens are available.
+    /// If refill_rate is 0, it returns immediately without consuming tokens.
+    pub fn consume(&self, amount: usize) -> impl Future<Output = ()> {
+        self.inner.consume(amount)
+    }
+
+    /// Check if bucket has expired
+    pub fn is_expired(&self, now_unix: u32) -> bool {
+        self.exp_unix < now_unix
+    }
+
+    /// Check if bucket hasn't been accessed recently (idle)
+    pub fn is_idle(&self, now_ms: u64, idle_threshold_ms: u64) -> bool {
+        self.inner.is_idle(now_ms, idle_threshold_ms)
+    }
+
+    /// Get expiry time
+    pub fn exp_unix(&self) -> u32 {
+        self.exp_unix
+    }
+
+    /// Get max kbps
+    pub fn max_kbps(&self) -> u16 {
+        self.max_kbps
+    }
+
+    /// Get max concurrency
+    pub fn max_concurrency(&self) -> u16 {
+        self.max_concurrency
+    }
+}
+
+/// Statistics about claim buckets
+#[derive(Debug, Clone)]
+pub struct ClaimBucketStats {
+    pub total: usize,
+    pub active: usize,
+    pub expired: usize,
+    pub unlimited: usize,
+    pub limited: usize,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::time::sleep;
 
     #[tokio::test]
     async fn test_token_bucket_consume() {
         // Create bucket with 10 tokens and 5 tokens/second refill
-        let bucket = TokenBucket::new(10.0, 5.0);
+        let bucket = TokenBucketInner::new(10.0, 5.0);
 
         // Should be able to consume 5 tokens immediately
         bucket.consume(5).await;
@@ -233,7 +347,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_bucket_refill() {
         // Create bucket with 0 tokens and 10 tokens/second refill
-        let bucket = TokenBucket::new(0.0, 10.0);
+        let bucket = TokenBucketInner::new(0.0, 10.0);
 
         // Wait 100ms
         sleep(Duration::from_millis(100)).await;
@@ -249,7 +363,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_bucket_zero_rate() {
         // Create bucket with 0 refill rate
-        let bucket = TokenBucket::new(10.0, 0.0);
+        let bucket = TokenBucketInner::new(10.0, 0.0);
 
         // Should return immediately without consuming
         bucket.consume(100).await;
@@ -264,7 +378,7 @@ mod tests {
         use tokio::task;
 
         // Create bucket with limited tokens
-        let bucket = TokenBucket::new(20.0, 10.0);
+        let bucket = ClaimBucket::new(1000.0, 2000000000, 1, 10);
 
         // Spawn multiple tasks trying to consume tokens
         let bucket1 = bucket.clone();
@@ -284,7 +398,72 @@ mod tests {
 
         // Wait for all tasks
         let _ = tokio::join!(handle1, handle2, handle3);
+    }
 
-        // All tasks should complete successfully
+    #[tokio::test]
+    async fn test_claim_bucket_creation() {
+        let bucket = ClaimBucket::new(1000.0, 2000000000, 500, 10);
+
+        assert_eq!(bucket.exp_unix(), 2000000000);
+        assert_eq!(bucket.max_kbps(), 500);
+        assert_eq!(bucket.max_concurrency(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_claim_bucket_concurrency() {
+        let bucket = ClaimBucket::new(1000.0, 2000000000, 500, 2);
+
+        // Should be able to acquire 2 permits
+        let permit1 = bucket.try_acquire_connection().unwrap();
+        let permit2 = bucket.try_acquire_connection().unwrap();
+
+        assert!(permit1.is_some());
+        assert!(permit2.is_some());
+
+        // Third attempt should fail
+        let permit3 = bucket.try_acquire_connection();
+        assert!(permit3.is_err());
+
+        // After dropping permits, should be able to acquire again
+        drop(permit1);
+        drop(permit2);
+
+        let permit4 = bucket.try_acquire_connection().unwrap();
+        assert!(permit4.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_claim_bucket_unlimited_concurrency() {
+        let bucket = ClaimBucket::new(1000.0, 2000000000, 500, 0);
+
+        // Should return None for unlimited concurrency
+        let permit = bucket.try_acquire_connection().unwrap();
+        assert!(permit.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_claim_bucket_expiry() {
+        let past_time = 1000000000u32;
+        let future_time = 2000000000u32;
+        let now = 1500000000u32;
+
+        let expired_bucket = ClaimBucket::new(1000.0, past_time, 500, 10);
+        let active_bucket = ClaimBucket::new(1000.0, future_time, 500, 10);
+
+        assert!(expired_bucket.is_expired(now));
+        assert!(!active_bucket.is_expired(now));
+    }
+
+    #[tokio::test]
+    async fn test_claim_bucket_idle_check() {
+        let bucket = ClaimBucket::new(1000.0, 2000000000, 500, 10);
+
+        // Should not be idle immediately
+        let now_ms = Instant::now().elapsed().as_millis() as u64;
+        assert!(!bucket.is_idle(now_ms, 1000)); // 1 second threshold
+
+        // Touch to update access time
+        bucket.touch();
+        assert!(!bucket.is_idle(now_ms + 500, 1000)); // Still within threshold
     }
 }
