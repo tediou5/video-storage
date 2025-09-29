@@ -2690,6 +2690,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-test"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2468baabc3311435b55dd935f702f42cd1b8abb7e754fb7dfb16bd36aa88f9f7"
+dependencies = [
+ "async-stream",
+ "bytes",
+ "futures-core",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "tokio-tungstenite"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2989,6 +3002,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "video-storage-claim"
+version = "0.3.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "parking_lot",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "video-storage-core"
 version = "0.3.0"
 dependencies = [
@@ -3026,6 +3057,7 @@ dependencies = [
  "tracing-subscriber",
  "urlencoding",
  "uuid",
+ "video-storage-claim",
  "video-storage-test-server",
  "walkdir",
  "warp",
@@ -3044,6 +3076,7 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "urlencoding",
+ "video-storage-claim",
  "video-storage-core",
  "warp",
 ]

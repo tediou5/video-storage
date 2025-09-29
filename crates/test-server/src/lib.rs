@@ -3,9 +3,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::OnceCell;
 use tokio::time::sleep;
+pub use video_storage_claim::{CreateClaimRequest, CreateClaimResponse};
 use video_storage_core::Config;
 use video_storage_core::job::convert::{ConvertJob, Scales};
-pub use video_storage_core::{CreateClaimRequest, CreateClaimResponse};
 
 pub static SHARED_SERVER: OnceCell<TestServer> = OnceCell::const_new();
 pub static SHARED_WEBHOOK: OnceCell<MockWebhook> = OnceCell::const_new();

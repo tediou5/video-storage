@@ -1,4 +1,3 @@
-use crate::claim::{ClaimBucketManager, ClaimManager};
 use crate::job::manager::JobSetManager;
 use crate::job::raw::RawJob;
 use crate::job::{Job, JobResult};
@@ -11,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
+use video_storage_claim::ClaimManager;
 
 const TEMP_DIR: &str = "temp";
 const UPLOADS_DIR: &str = "uploads";
@@ -27,9 +27,8 @@ fn init_workspace(workspace: &Path) -> std::io::Result<()> {
 pub struct AppState {
     pub job_tx: UnboundedSender<RawJob>,
     pub jobs_manager: JobSetManager,
-    pub storage_manager: Arc<StorageManager>,
     pub claim_manager: ClaimManager,
-    pub claim_bucket_manager: ClaimBucketManager,
+    pub storage_manager: Arc<StorageManager>,
 
     pub temp_dir: PathBuf,
     pub videos_dir: PathBuf,
@@ -51,17 +50,15 @@ impl AppState {
 
         let jobs_manager = JobSetManager::new(workspace, &tx)?;
 
-        // Initialize claim managers
-        let claim_manager = ClaimManager::from_config(claim_keys)
+        // Initialize claim manager
+        let claim_manager = ClaimManager::from_keys(claim_keys, token_rate)
             .map_err(|error| std::io::Error::new(StdIoErrorKind::InvalidInput, error))?;
-        let claim_bucket_manager = ClaimBucketManager::new(token_rate);
 
         let this = Self {
             job_tx: tx,
             jobs_manager,
-            storage_manager: Arc::new(storage_manager),
             claim_manager,
-            claim_bucket_manager,
+            storage_manager: Arc::new(storage_manager),
 
             temp_dir: workspace.join(TEMP_DIR),
             uploads_dir: workspace.join(UPLOADS_DIR),
@@ -70,7 +67,7 @@ impl AppState {
         };
 
         // Start the cleanup task after we're in async context
-        this.claim_bucket_manager.start_cleanup_task();
+        this.claim_manager.start_cleanup_task();
 
         // Start job handler
         this.start_job_handler(rx, permits);

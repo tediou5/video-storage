@@ -51,6 +51,9 @@ base64.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
 
+# Local dependencies
+video-storage-claim = { path = "../claim" }
+
 [dev-dependencies]
 video-storage-test-server = { path = "../test-server" }
 tower = "0.5"

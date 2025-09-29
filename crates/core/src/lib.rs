@@ -3,7 +3,6 @@
 
 pub mod api;
 pub mod app_state;
-pub mod claim;
 pub mod config;
 pub mod job;
 pub mod opendal;
@@ -22,15 +21,8 @@ use tracing::info;
 //
 // Re-export
 //
-pub use api::{
-    TokenBucket, create_claim, log_request_errors, serve_video, upload_mp4_raw, waitlist,
-};
+pub use api::{create_claim, log_request_errors, serve_video, upload_mp4_raw, waitlist};
 pub use app_state::AppState;
-pub use claim::{
-    ClaimBucketManager, ClaimManager, ClaimPayloadV1, ClaimState, CreateClaimRequest,
-    CreateClaimResponse, HLS_SEGMENT_DURATION, claim_auth_middleware,
-    validate_claim_time_and_resource,
-};
 pub use config::Config;
 pub use job::{ConvertJob, Job, JobResult, UploadJob};
 pub use opendal::{StorageBackend, StorageConfig, StorageManager};
@@ -102,9 +94,8 @@ pub async fn run(config: Config) {
         .allow_headers(Any);
 
     // Create claim state for middleware
-    let claim_state = claim::ClaimState {
+    let claim_state = video_storage_claim::ClaimState {
         claim_manager: state.claim_manager.clone(),
-        bucket_manager: state.claim_bucket_manager.clone(),
     };
 
     // External routes (claim-protected)
@@ -112,7 +103,7 @@ pub async fn run(config: Config) {
         .route("/videos/{*filename}", get(serve_video))
         .route_layer(axum::middleware::from_fn_with_state(
             claim_state,
-            claim::claim_auth_middleware,
+            video_storage_claim::claim_auth_middleware,
         ))
         .layer(axum::middleware::from_fn(api::log_request_errors))
         .layer(cors.clone())

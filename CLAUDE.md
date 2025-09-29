@@ -48,23 +48,37 @@ cargo clippy --all-targets --all-features
 
 ```text
 video-storage/
-├── src/                      # Main Rust source code
-│   ├── main.rs              # Application entry point & server initialization
-│   ├── lib.rs               # Main library crate with Axum server setup
-│   ├── app_state.rs         # Shared application state management
-│   ├── config.rs            # Configuration loading & parsing
-│   ├── opendal.rs           # Storage abstraction layer (OpenDAL)
-│   ├── stream_map.rs        # Video streaming utilities
-│   ├── api/                 # HTTP API layer
-│   │   ├── routes.rs        # Route handlers for all endpoints
-│   │   ├── middleware.rs    # HTTP middleware components
-│   │   └── token_bucket.rs  # Rate limiting for video streaming
-│   ├── claim/               # Access control & authorization
-│   └── job/                 # Background job processing system
-├── tests/                   # Integration tests
-├── docs/                    # Project documentation
-├── scripts/                 # Development & deployment scripts
-└── .github/                 # GitHub workflows & templates
+├── crates/
+│   ├── core/                     # Main application crate
+│   │   ├── src/
+│   │   │   ├── main.rs           # Application entry point & server initialization
+│   │   │   ├── lib.rs            # Main library crate with Axum server setup
+│   │   │   ├── app_state.rs      # Shared application state management
+│   │   │   ├── config.rs         # Configuration loading & parsing
+│   │   │   ├── opendal.rs        # Storage abstraction layer (OpenDAL)
+│   │   │   ├── stream_map.rs     # Video streaming utilities
+│   │   │   ├── api/              # HTTP API layer
+│   │   │   │   ├── routes.rs     # Route handlers for all endpoints
+│   │   │   │   └── middleware.rs # HTTP middleware components
+│   │   │   └── job/              # Background job processing system
+│   │   └── tests/                # Integration tests
+│   │   └── Cargo.toml
+│   ├── claim/                    # Independent claim management crate
+│   │   ├── src/
+│   │   │   ├── lib.rs            # Main claim library with validation functions
+│   │   │   ├── manager.rs        # Unified ClaimManager (keys + buckets)
+│   │   │   ├── bucket.rs         # Token bucket and claim bucket implementation
+│   │   │   ├── header.rs         # Claim header with nonce + create_at
+│   │   │   ├── payload_v1.rs     # Claim payload serialization
+│   │   │   ├── middleware.rs     # HTTP middleware for claim auth
+│   │   │   ├── create_request.rs # Claim creation API structures
+│   │   │   └── error.rs          # Claim error types
+│   │   └── Cargo.toml
+│   └── test-server/              # Test utilities crate
+├──
+├── docs/                         # Project documentation
+├── scripts/                      # Development & deployment scripts
+└── .github/                      # GitHub workflows & templates
 
 ```
 
@@ -73,10 +87,15 @@ video-storage/
 1.  **Stateful Web Service (Axum)**: The application is a web service built with the Axum framework. It uses a shared, atomically reference-counted `AppState` struct to manage state (configuration, managers, etc.) across all concurrent requests, which is a standard pattern in modern Rust web applications.
 2.  **Asynchronous Background Job Queue**: Long-running tasks like video transcoding are handled by a background job system. New jobs are submitted to an `async-channel`, and a worker pool processes them. A `JobSetManager` persists the job queue to disk (`pending-converts.json`) to ensure durability across application restarts. This decouples the API from the heavy lifting.
 3.  **Storage Abstraction (OpenDAL)**: The use of the `OpenDAL` library provides a generic interface over different storage backends. This allows the application to be configured to use the local filesystem for development and a cloud provider like AWS S3 for production without changing the core application logic.
-4.  **Middleware-driven Authorization and Rate Limiting**:
-    -   **Claim-Based Auth**: Access to video assets is controlled by a custom claim system. A dedicated middleware (`claim_middleware.rs`) likely intercepts requests to validate time-limited, signed tokens (claims) before allowing access.
-    -   **Bandwidth Throttling**: A `TokenBucket` implementation is used to enforce rate limits on video streaming, preventing abuse and managing resource allocation. This is applied when serving video file chunks.
-5.  **Centralized Configuration**: A single `Config` struct, populated by `clap` and `toml`, centralizes all configuration parameters. This makes the application easy to configure and deploy in different environments.
+4.  **Independent Claim Management System**:
+    -   **Modular Design**: The claim system is now a completely independent crate (`video-storage-claim`) that can be used in other projects. This provides better modularity and maintainability.
+    -   **Unified ClaimManager**: A single `ClaimManager` handles both cryptographic operations (token signing/verification) and bucket management (rate limiting + concurrency control), eliminating the previous separation between `ClaimManager` and `ClaimBucketManager`.
+    -   **Optimized Bucket Keys**: Instead of using full encrypted tokens as bucket keys, the system now uses a combination of nonce (12 bytes) + create_at timestamp (16 bytes) from the claim header, significantly reducing memory usage and CPU overhead.
+    -   **Enhanced Header Structure**: Claim headers now include a `create_at` field (128-bit nanosecond timestamp) alongside the existing nonce, providing better uniqueness guarantees for bucket keys.
+5.  **Middleware-driven Authorization and Rate Limiting**:
+    -   **Claim-Based Auth**: Access to video assets is controlled by the custom claim system. A dedicated middleware intercepts requests to validate time-limited, signed tokens (claims) before allowing access.
+    -   **Integrated Bandwidth Throttling**: Token bucket rate limiting is now integrated directly into the claim system, with per-claim bandwidth and concurrency controls applied automatically during video streaming.
+6.  **Centralized Configuration**: A single `Config` struct, populated by `clap` and `toml`, centralizes all configuration parameters. This makes the application easy to configure and deploy in different environments.
 
 ### Critical Development Notes
 1. **Testing Requirements**:

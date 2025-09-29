@@ -1,4 +1,4 @@
-use crate::claim::error::ClaimError;
+use crate::error::ClaimError;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 

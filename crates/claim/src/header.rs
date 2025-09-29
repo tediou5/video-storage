@@ -1,4 +1,5 @@
-use crate::claim::error::ClaimError;
+use crate::error::ClaimError;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Constants for token format
 pub(crate) const MAGIC: &[u8; 4] = b"VSC1";
@@ -7,8 +8,8 @@ pub(crate) const ALG_AES_256_GCM: u8 = 1;
 #[allow(dead_code)]
 pub(crate) const ALG_CHACHA20_POLY1305: u8 = 2;
 
-// Header size: magic(4) + ver(1) + kid(1) + alg(1) + rsv(1) + nonce(12) = 20 bytes
-pub(crate) const HEADER_SIZE: usize = 20;
+// Header size: magic(4) + ver(1) + kid(1) + alg(1) + rsv(1) + nonce(12) + create_at(16) = 36 bytes
+pub(crate) const HEADER_SIZE: usize = 36;
 pub(crate) const TAG_SIZE: usize = 16;
 
 /// Binary header structure (plaintext)
@@ -20,6 +21,8 @@ pub(crate) struct ClaimHeader {
     pub alg: u8,
     pub rsv: u8,
     pub nonce: [u8; 12],
+    // Creation time in nanoseconds since UNIX_EPOCH
+    pub create_at: u128,
 }
 
 impl ClaimHeader {
@@ -28,6 +31,11 @@ impl ClaimHeader {
         use rand::RngCore;
         rand::thread_rng().fill_bytes(&mut nonce);
 
+        let create_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
         Self {
             magic: *MAGIC,
             version: VERSION,
@@ -35,7 +43,16 @@ impl ClaimHeader {
             alg,
             rsv: 0,
             nonce,
+            create_at,
         }
+    }
+
+    /// Generate bucket key from nonce and create_at
+    pub fn bucket_key(&self) -> [u8; 28] {
+        let mut key_bytes = [0u8; 28];
+        key_bytes[0..12].copy_from_slice(&self.nonce);
+        key_bytes[12..28].copy_from_slice(&self.create_at.to_le_bytes());
+        key_bytes
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -46,6 +63,7 @@ impl ClaimHeader {
         bytes.push(self.alg);
         bytes.push(self.rsv);
         bytes.extend_from_slice(&self.nonce);
+        bytes.extend_from_slice(&self.create_at.to_le_bytes());
         bytes
     }
 
@@ -75,6 +93,11 @@ impl ClaimHeader {
             .try_into()
             .map_err(|_| ClaimError::InvalidHeader("Failed to read nonce".to_string()))?;
 
+        let create_at_bytes: [u8; 16] = bytes[20..36]
+            .try_into()
+            .map_err(|_| ClaimError::InvalidHeader("Failed to read create_at".to_string()))?;
+        let create_at = u128::from_le_bytes(create_at_bytes);
+
         Ok(Self {
             magic,
             version,
@@ -82,6 +105,7 @@ impl ClaimHeader {
             alg,
             rsv,
             nonce,
+            create_at,
         })
     }
 }
