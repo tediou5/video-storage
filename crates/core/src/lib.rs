@@ -114,7 +114,9 @@ pub async fn run(config: Config) {
         .route("/claims", post(create_claim))
         .route("/upload", post(upload_mp4_raw))
         .route("/waitlist", get(waitlist))
+        .route("/videos/{*filename}", get(serve_video))
         .layer(axum::middleware::from_fn(api::log_request_errors))
+        .layer(axum::middleware::from_fn(api::no_auth_middleware))
         .layer(cors)
         .layer(Extension(state));
 
