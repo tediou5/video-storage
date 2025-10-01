@@ -168,8 +168,8 @@ impl Job for ConvertJob {
 
                 if let Err(error) = remux_av_only(input_path.to_str().unwrap(), &sanitized_input) {
                     warn!(?error, "Remux failed, using original file for conversion");
-                    _ = std::fs::remove_file(&sanitized_input)?;
-                    _ = std::fs::rename(&input_path, &sanitized_input)?;
+                    _ = std::fs::remove_file(&sanitized_input);
+                    std::fs::rename(&input_path, &sanitized_input)?;
                 };
 
                 create_master_playlist(&job, &sanitized_input, &temp_dir)?;
