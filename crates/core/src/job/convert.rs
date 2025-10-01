@@ -165,8 +165,12 @@ impl Job for ConvertJob {
                 let input_path = job.upload_path(&state);
                 let sanitized_input = format!("/tmp/{}-sanitized.mp4", job.id());
                 _ = std::fs::File::create(&sanitized_input)?;
-                remux_av_only(input_path.to_str().unwrap(), &sanitized_input)
-                    .inspect_err(|error| error!(?input_path, ?error, "remuxing input failed"))?;
+
+                if let Err(error) = remux_av_only(input_path.to_str().unwrap(), &sanitized_input) {
+                    warn!(?error, "Remux failed, using original file for conversion");
+                    _ = std::fs::remove_file(&sanitized_input)?;
+                    _ = std::fs::rename(&input_path, &sanitized_input)?;
+                };
 
                 create_master_playlist(&job, &sanitized_input, &temp_dir)?;
                 // Remove existing directory if it exists
