@@ -8,7 +8,7 @@ use ez_ffmpeg::filter::frame_filter_context::FrameFilterContext;
 use ez_ffmpeg::filter::frame_pipeline_builder::FramePipelineBuilder;
 use ez_ffmpeg::{AVMediaType, Input};
 use ez_ffmpeg::{FfmpegContext, Output};
-use ffmpeg_next::{codec, format, media};
+use ffmpeg_next::{StreamMut, codec, format, media};
 use serde::{Deserialize, Serialize};
 use std::io::Write as _;
 use std::ops::Deref;
@@ -294,6 +294,16 @@ pub fn convert(
     Ok(builder.outputs(outputs).build()?.start()?.wait()?)
 }
 
+/// Clear codec tag from stream
+fn clear_codec_tag(stream: &mut StreamMut) {
+    unsafe {
+        let av_stream = stream.as_mut_ptr();
+        if !av_stream.is_null() && !(*av_stream).codecpar.is_null() {
+            (*(*av_stream).codecpar).codec_tag = 0;
+        }
+    }
+}
+
 /// Remux video: copy video and audio streams without re-encoding, skip subtitle streams
 /// Equivalent to: ffmpeg -i in.mp4 -map 0:v -map 0:a? -c:v copy -c:a copy -dn out.mp4
 fn remux_av_only(input: &str, output: &str) -> anyhow::Result<()> {
@@ -309,8 +319,10 @@ fn remux_av_only(input: &str, output: &str) -> anyhow::Result<()> {
         match medium {
             media::Type::Video | media::Type::Audio => {
                 let mut output_stream = output_context.add_stream(codec::Id::None)?;
-                output_stream.set_parameters(stream.parameters());
                 output_stream.set_time_base(stream.time_base());
+                output_stream.set_parameters(stream.parameters());
+
+                clear_codec_tag(&mut output_stream);
 
                 stream_mapping[i] = Some(output_stream.index());
             }
