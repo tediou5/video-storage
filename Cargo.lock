@@ -3107,6 +3107,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "twox-hash"
+version = "2.1.2"
+
+[[package]]
 name = "typenum"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3227,6 +3231,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+ "xorf",
 ]
 
 [[package]]
@@ -3764,6 +3769,9 @@ dependencies = [
  "criterion",
  "libm",
  "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "twox-hash",
 ]
 
 [[package]]

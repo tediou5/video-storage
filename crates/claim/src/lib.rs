@@ -5,6 +5,7 @@ mod header;
 pub mod manager;
 pub mod middleware;
 pub mod payload_v1;
+pub mod payload_v2;
 
 // Re-export public types and functions
 pub use bucket::{ClaimBucket, ClaimBucketStats};

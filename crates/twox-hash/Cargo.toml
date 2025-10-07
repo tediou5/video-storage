@@ -1,0 +1,5 @@
+[package]
+name = "twox-hash"
+version = "2.1.2"
+edition = "2024"
+description = "Simplified XxHash3_64 implementation"
