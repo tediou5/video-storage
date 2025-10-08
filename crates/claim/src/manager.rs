@@ -1,7 +1,7 @@
+use crate::ClaimPayloadV1;
 use crate::bucket::{ClaimBucket, ClaimBucketStats};
 use crate::error::ClaimError;
 use crate::header::{ALG_AES_256_GCM, ClaimHeader, HEADER_SIZE, TAG_SIZE};
-use crate::payload_v1::ClaimPayloadV1;
 use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Key, Nonce};

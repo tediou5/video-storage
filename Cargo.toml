@@ -1,8 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/*",
+    "crates/claim",
+    "crates/core",
     "crates/test-server",
+    "crates/twox-hash",
+    "crates/xorf",
 ]
 
 [workspace.package]

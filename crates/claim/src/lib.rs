@@ -4,8 +4,7 @@ pub mod error;
 mod header;
 pub mod manager;
 pub mod middleware;
-pub mod payload_v1;
-pub mod payload_v2;
+pub mod payload;
 
 // Re-export public types and functions
 pub use bucket::{ClaimBucket, ClaimBucketStats};
@@ -13,7 +12,7 @@ pub use create_request::{CreateClaimRequest, CreateClaimResponse};
 pub use error::ClaimError;
 pub use manager::ClaimManager;
 pub use middleware::{ClaimState, claim_auth_middleware};
-pub use payload_v1::ClaimPayloadV1;
+pub use payload::ClaimPayloadV1;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

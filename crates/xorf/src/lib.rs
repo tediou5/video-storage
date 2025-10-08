@@ -101,7 +101,7 @@ pub struct Descriptor {
 }
 
 impl Descriptor {
-    const LEN: usize = 20;
+    pub const LEN: usize = 20;
 }
 
 /// A `BinaryFuse16` filter is an Xor-like filter with 16-bit fingerprints arranged in a binary-partitioned fuse graph.
@@ -407,8 +407,72 @@ impl BinaryFuse16 {
     /// |-----|------------|--------------|
     /// |   2 |         20 |      len * 2 |
     pub fn deserialize(bytes: &[u8]) -> Result<Self, &'static str> {
-        // TODO:
-        todo!()
+        if bytes.len() < 22 {
+            return Err("Input too short for BinaryFuse16");
+        }
+
+        let mut offset = 0;
+
+        // len (2 bytes, u16)
+        let len = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        offset += 2;
+
+        // Check total expected size
+        let expected_size = 2 + Descriptor::LEN + (len as usize * 2);
+        if bytes.len() != expected_size {
+            return Err("Invalid BinaryFuse16 data length");
+        }
+
+        // Descriptor (20 bytes)
+        let seed = u64::from_le_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .map_err(|_| "Failed to read seed")?,
+        );
+        offset += 8;
+
+        let segment_length = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| "Failed to read segment_length")?,
+        );
+        offset += 4;
+
+        let segment_length_mask = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| "Failed to read segment_length_mask")?,
+        );
+        offset += 4;
+
+        let segment_count_length = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| "Failed to read segment_count_length")?,
+        );
+        offset += 4;
+
+        // Fingerprints (len * 2 bytes)
+        let mut fingerprints = Vec::with_capacity(len as usize);
+        for _ in 0..len {
+            let fingerprint = u16::from_le_bytes(
+                bytes[offset..offset + 2]
+                    .try_into()
+                    .map_err(|_| "Failed to read fingerprint")?,
+            );
+            fingerprints.push(fingerprint);
+            offset += 2;
+        }
+
+        Ok(BinaryFuse16 {
+            descriptor: Descriptor {
+                seed,
+                segment_length,
+                segment_length_mask,
+                segment_count_length,
+            },
+            fingerprints: fingerprints.into_boxed_slice(),
+        })
     }
 
     /// Serialize a `BinaryFuse16` to a byte slice.
@@ -417,8 +481,24 @@ impl BinaryFuse16 {
     /// |-----|------------|--------------|
     /// |   2 |         20 |      len * 2 |
     pub fn serialize(&self) -> Vec<u8> {
-        // TODO:
-        todo!()
+        let mut bytes = Vec::new();
+
+        // len (2 bytes, u16)
+        let len = self.fingerprints.len() as u16;
+        bytes.extend_from_slice(&len.to_le_bytes());
+
+        // Descriptor (20 bytes)
+        bytes.extend_from_slice(&self.descriptor.seed.to_le_bytes()); // 8 bytes
+        bytes.extend_from_slice(&self.descriptor.segment_length.to_le_bytes()); // 4 bytes
+        bytes.extend_from_slice(&self.descriptor.segment_length_mask.to_le_bytes()); // 4 bytes
+        bytes.extend_from_slice(&self.descriptor.segment_count_length.to_le_bytes()); // 4 bytes
+
+        // Fingerprints (len * 2 bytes)
+        for fingerprint in self.fingerprints.iter() {
+            bytes.extend_from_slice(&fingerprint.to_le_bytes());
+        }
+
+        bytes
     }
 }
 

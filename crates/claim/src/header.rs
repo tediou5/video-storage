@@ -14,7 +14,7 @@ pub(crate) const TAG_SIZE: usize = 16;
 
 /// Binary header structure (plaintext)
 #[derive(Debug, Clone)]
-pub(crate) struct ClaimHeader {
+pub struct ClaimHeader {
     pub magic: [u8; 4],
     pub version: u8,
     pub kid: u8,
