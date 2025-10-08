@@ -49,7 +49,7 @@ pub struct Config {
     #[serde(default = "default_permits")]
     pub permits: usize,
 
-    /// Token bucket rate limiting (0.0 = disabled)
+    /// (Deprecated): Token bucket rate limiting (0.0 = disabled)
     #[arg(short, long, default_value_t = 0.0)]
     #[serde(default = "default_token_rate")]
     pub token_rate: f64,

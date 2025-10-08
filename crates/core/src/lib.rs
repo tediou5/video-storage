@@ -33,7 +33,6 @@ pub async fn run(config: Config) {
     let listen_on_port = config.listen_on_port;
     let internal_port = config.internal_port;
     let permits = config.permits;
-    let token_rate = config.token_rate;
     let workspace = config.workspace.clone();
     let webhook_url = config.webhook_url.clone();
     let claim_keys = config.claim_keys.clone();
@@ -77,7 +76,6 @@ pub async fn run(config: Config) {
         .await
         .expect("Failed to initialize storage manager");
     let state = AppState::new(
-        token_rate,
         permits,
         &workspace_path,
         storage_manager,

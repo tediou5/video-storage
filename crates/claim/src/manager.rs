@@ -1,7 +1,8 @@
-use crate::bucket::{ClaimBucket, ClaimBucketStats};
+use crate::ClaimPayloadV1;
+use crate::bucket::{BucketKey, ClaimBucket, ClaimBucketStats};
 use crate::error::ClaimError;
 use crate::header::{ALG_AES_256_GCM, ClaimHeader, HEADER_SIZE, TAG_SIZE};
-use crate::payload_v1::ClaimPayloadV1;
+use crate::payload::{ClaimPayloadV2, Payload};
 use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Key, Nonce};
@@ -88,18 +89,18 @@ impl ClaimManagerInner {
     }
 
     /// Sign a claim and return the base64url-encoded token
-    fn sign_claim(&self, payload: &ClaimPayloadV1) -> Result<String> {
+    fn sign_claim<P: Payload>(&self, payload: &P) -> Result<String> {
         let key = self
             .keys
             .get(&self.current_kid)
             .ok_or_else(|| anyhow!("Key ID {} not found", self.current_kid))?;
 
-        // Create header
-        let header = ClaimHeader::new(self.current_kid, ALG_AES_256_GCM);
+        // Create header with payload version
+        let header = ClaimHeader::new(self.current_kid, ALG_AES_256_GCM, payload.version());
         let header_bytes = header.to_bytes();
 
         // Serialize payload
-        let payload_bytes = payload.serialize_to_bytes()?;
+        let payload_bytes = payload.serialize()?;
 
         // Encrypt using AES-256-GCM
         let cipher_key = Key::<Aes256Gcm>::from_slice(key);
@@ -125,87 +126,29 @@ impl ClaimManagerInner {
         Ok(URL_SAFE_NO_PAD.encode(token_bytes))
     }
 
-    /// Verify and decode a claim token, returning both payload and bucket key
-    fn verify_claim(&self, token: &str) -> Result<(ClaimPayloadV1, [u8; 28]), ClaimError> {
-        // Decode from base64url
-        let token_bytes = URL_SAFE_NO_PAD
-            .decode(token)
-            .map_err(|_| ClaimError::InvalidToken)?;
-
-        if token_bytes.len() < HEADER_SIZE + TAG_SIZE {
-            return Err(ClaimError::InvalidToken);
-        }
-
-        // Parse header
-        let header = ClaimHeader::from_bytes(&token_bytes[..HEADER_SIZE])?;
-
-        // Get the key
-        let key = self
-            .keys
-            .get(&header.kid)
-            .ok_or(ClaimError::KeyNotFound(header.kid))?;
-
-        // Extract ciphertext (includes tag)
-        let ciphertext = &token_bytes[HEADER_SIZE..];
-
-        // Decrypt using AES-256-GCM
-        if header.alg != ALG_AES_256_GCM {
-            return Err(ClaimError::InvalidHeader(format!(
-                "Unsupported algorithm: {}",
-                header.alg
-            )));
-        }
-
-        let cipher_key = Key::<Aes256Gcm>::from_slice(key);
-        let cipher = Aes256Gcm::new(cipher_key);
-        let nonce = Nonce::from_slice(&header.nonce);
-
-        // Use header as AAD
-        let header_bytes = header.to_bytes();
-        let payload_bytes = cipher
-            .decrypt(
-                nonce,
-                aes_gcm::aead::Payload {
-                    msg: ciphertext,
-                    aad: &header_bytes,
-                },
-            )
-            .map_err(|_| ClaimError::AeadFail)?;
-
-        // Deserialize payload
-        let payload = ClaimPayloadV1::deserialize_from_bytes(&payload_bytes)?;
-
-        Ok((payload, header.bucket_key()))
-    }
-
     /// Get or create a token bucket for a claim
-    fn create_bucket(
+    fn create_bucket<P: Payload>(
         &mut self,
-        bucket_key: &[u8; 28],
-        claim_payload: &ClaimPayloadV1,
-        default_token_rate: f64,
+        bucket_key: &BucketKey,
+        claim_payload: &P,
     ) -> ClaimBucket {
-        let token_rate = if claim_payload.max_kbps > 0 {
+        let max_kbps = claim_payload.max_kbps();
+        let exp_unix = claim_payload.exp_unix();
+        let max_concurrency = claim_payload.max_concurrency();
+
+        let token_rate = if max_kbps > 0 {
             // Convert kbps to bytes per second
-            (claim_payload.max_kbps as f64) * 1024.0 / 8.0
+            (max_kbps as f64) * 1024.0 / 8.0
         } else {
-            default_token_rate
+            0.0
         };
 
         debug!(
-            max_kbps = claim_payload.max_kbps,
-            max_concurrency = claim_payload.max_concurrency,
-            token_rate,
-            "Creating new claim bucket"
+            max_kbps,
+            max_concurrency, token_rate, "Creating new claim bucket"
         );
 
-        let claim_bucket = ClaimBucket::new(
-            token_rate,
-            claim_payload.exp_unix,
-            claim_payload.max_kbps,
-            claim_payload.max_concurrency,
-        );
-
+        let claim_bucket = ClaimBucket::new(token_rate, exp_unix, max_kbps, max_concurrency);
         self.buckets.insert(*bucket_key, claim_bucket.clone());
 
         claim_bucket
@@ -304,41 +247,36 @@ impl ClaimManagerInner {
 #[derive(Clone, Debug)]
 pub struct ClaimManager {
     inner: Arc<RwLock<ClaimManagerInner>>,
-
-    default_token_rate: f64,
     cleanup_interval: Duration,
 }
 
 impl ClaimManager {
     /// Create a new ClaimManager with randomly generated keys
-    pub fn new(default_token_rate: f64) -> Self {
+    pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(ClaimManagerInner::new())),
-            default_token_rate,
             cleanup_interval: Duration::from_secs(300), // 5 minutes
         }
     }
 
     /// Create a ClaimManager from configuration
     /// If config_keys is provided, use them; otherwise generate random keys
-    pub fn from_keys(keys: Vec<(u8, [u8; 32])>, default_token_rate: f64) -> Result<Self> {
+    pub fn from_keys(keys: Vec<(u8, [u8; 32])>) -> Result<Self> {
         if keys.is_empty() {
-            return Ok(Self::new(default_token_rate));
+            return Ok(Self::new());
         };
 
         Ok(Self {
             inner: Arc::new(RwLock::new(ClaimManagerInner::from_keys(keys))),
-            default_token_rate,
             cleanup_interval: Duration::from_secs(300),
         })
     }
 
     /// Create a new claim manager with a specific key (for testing or key rotation)
     #[allow(dead_code)]
-    pub fn with_key(kid: u8, key: [u8; 32], default_token_rate: f64) -> Self {
+    pub fn with_key(kid: u8, key: [u8; 32]) -> Self {
         Self {
             inner: Arc::new(RwLock::new(ClaimManagerInner::with_key(kid, key))),
-            default_token_rate,
             cleanup_interval: Duration::from_secs(300),
         }
     }
@@ -356,25 +294,97 @@ impl ClaimManager {
     }
 
     /// Sign a claim and return the base64url-encoded token
-    pub fn sign_claim(&self, payload: &ClaimPayloadV1) -> Result<String> {
+    pub fn sign_claim<P: Payload>(&self, payload: &P) -> Result<String> {
         self.inner.read().sign_claim(payload)
     }
 
     /// Verify and decode a claim token, returning both payload and bucket key
-    pub fn verify_claim(&self, token: &str) -> Result<(ClaimPayloadV1, [u8; 28]), ClaimError> {
-        self.inner.read().verify_claim(token)
+    pub fn verify_claim(
+        &self,
+        token: &str,
+        asset_id: &str,
+        segment_index: Option<u32>,
+        width: Option<u16>,
+    ) -> Result<(ClaimBucket, BucketKey), ClaimError> {
+        let this = self.inner.read();
+
+        // Decode from base64url
+        let token_bytes = URL_SAFE_NO_PAD
+            .decode(token)
+            .map_err(|_| ClaimError::InvalidToken)?;
+
+        if token_bytes.len() < HEADER_SIZE + TAG_SIZE {
+            return Err(ClaimError::InvalidToken);
+        }
+
+        // Parse header
+        let header = ClaimHeader::from_bytes(&token_bytes[..HEADER_SIZE])?;
+
+        // Get the key
+        let key = this
+            .keys
+            .get(&header.kid)
+            .ok_or(ClaimError::KeyNotFound(header.kid))?;
+
+        // Extract ciphertext (includes tag)
+        let ciphertext = &token_bytes[HEADER_SIZE..];
+
+        // Decrypt using AES-256-GCM
+        if header.alg != ALG_AES_256_GCM {
+            return Err(ClaimError::InvalidHeader(format!(
+                "Unsupported algorithm: {}",
+                header.alg
+            )));
+        }
+
+        let cipher_key = Key::<Aes256Gcm>::from_slice(key);
+        let cipher = Aes256Gcm::new(cipher_key);
+        let nonce = Nonce::from_slice(&header.nonce);
+
+        // release lock
+        drop(this);
+
+        // Use header as AAD
+        let header_bytes = header.to_bytes();
+        let payload_bytes = cipher
+            .decrypt(
+                nonce,
+                aes_gcm::aead::Payload {
+                    msg: ciphertext,
+                    aad: &header_bytes,
+                },
+            )
+            .map_err(|_| ClaimError::AeadFail)?;
+
+        let bucket_key = header.bucket_key();
+
+        let bucket = match header.version {
+            1 => {
+                let payload =
+                    ClaimPayloadV1::verify(&payload_bytes, asset_id, segment_index, width)?;
+                self.get_or_create_bucket(&bucket_key, &payload)
+            }
+            2 => {
+                let payload =
+                    ClaimPayloadV2::verify(&payload_bytes, asset_id, segment_index, width)?;
+                self.get_or_create_bucket(&bucket_key, &payload)
+            }
+            _ => return Err(ClaimError::UnsupportedVersion(header.version)),
+        };
+
+        Ok((bucket, bucket_key))
     }
 
     /// Get or create a token bucket for a claim
-    pub fn get_or_create_bucket(
+    pub fn get_or_create_bucket<P: Payload>(
         &self,
-        bucket_key: &[u8; 28],
-        claim_payload: &ClaimPayloadV1,
+        bucket_key: &BucketKey,
+        claim_payload: &P,
     ) -> ClaimBucket {
         if let Some(claim_bucket) = self.inner.read().get_bucket(bucket_key) {
             debug!(
-                max_kbps = claim_payload.max_kbps,
-                max_concurrency = claim_payload.max_concurrency,
+                max_kbps = claim_payload.max_kbps(),
+                max_concurrency = claim_payload.max_concurrency(),
                 "Using existing claim bucket"
             );
             // Update last access time
@@ -382,9 +392,7 @@ impl ClaimManager {
             return claim_bucket;
         }
 
-        self.inner
-            .write()
-            .create_bucket(bucket_key, claim_payload, self.default_token_rate)
+        self.inner.write().create_bucket(bucket_key, claim_payload)
     }
 
     /// Update last access time for a claim bucket
@@ -414,7 +422,7 @@ impl ClaimManager {
 
 impl Default for ClaimManager {
     fn default() -> Self {
-        Self::new(1000.0) // Default 1MB/s
+        Self::new()
     }
 }
 
@@ -424,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_claim_sign_and_verify() {
-        let manager = ClaimManager::new(1000.0);
+        let manager = ClaimManager::new();
 
         let payload = ClaimPayloadV1 {
             exp_unix: 2000000000,
@@ -439,18 +447,16 @@ mod tests {
         let token = manager.sign_claim(&payload).unwrap();
         assert!(!token.is_empty());
 
-        let (verified, bucket_key) = manager.verify_claim(&token).unwrap();
-        assert_eq!(verified.asset_id, payload.asset_id);
-        assert_eq!(verified.exp_unix, payload.exp_unix);
-        assert_eq!(verified.window_len_sec, payload.window_len_sec);
-        assert_eq!(verified.max_kbps, payload.max_kbps);
-        assert_eq!(verified.max_concurrency, payload.max_concurrency);
+        let (bucket, bucket_key) = manager.verify_claim(&token, "test789", None, None).unwrap();
+        assert_eq!(bucket.exp_unix, payload.exp_unix);
+        assert_eq!(bucket.max_kbps, payload.max_kbps);
+        assert_eq!(bucket.max_concurrency, payload.max_concurrency);
         assert!(!bucket_key.is_empty());
     }
 
     #[tokio::test]
     async fn test_bucket_creation_and_reuse() {
-        let manager = ClaimManager::new(1000.0);
+        let manager = ClaimManager::new();
 
         let payload = ClaimPayloadV1 {
             exp_unix: 2000000000,
@@ -463,13 +469,9 @@ mod tests {
         };
 
         let token = manager.sign_claim(&payload).unwrap();
-        let (verified_payload, bucket_key) = manager.verify_claim(&token).unwrap();
-
-        // Create a bucket
-        let _bucket1 = manager.get_or_create_bucket(&bucket_key, &verified_payload);
-
-        // Get the same bucket again
-        let _bucket2 = manager.get_or_create_bucket(&bucket_key, &verified_payload);
+        let (_, bucket_key) = manager
+            .verify_claim(&token, "test_bucket", None, None)
+            .unwrap();
 
         // Different token should get different bucket
         let payload2 = ClaimPayloadV1 {
@@ -483,15 +485,16 @@ mod tests {
         };
 
         let token2 = manager.sign_claim(&payload2).unwrap();
-        let (verified_payload2, bucket_key2) = manager.verify_claim(&token2).unwrap();
-        let _bucket3 = manager.get_or_create_bucket(&bucket_key2, &verified_payload2);
+        let (_, bucket_key2) = manager
+            .verify_claim(&token2, "test_bucket_2", None, None)
+            .unwrap();
 
         assert_ne!(bucket_key, bucket_key2);
     }
 
     #[tokio::test]
     async fn test_cleanup() {
-        let manager = ClaimManager::new(1000.0);
+        let manager = ClaimManager::new();
 
         // Add an expired bucket
         let expired_payload = ClaimPayloadV1 {
@@ -505,8 +508,9 @@ mod tests {
         };
 
         let token1 = manager.sign_claim(&expired_payload).unwrap();
-        let (verified_expired, bucket_key1) = manager.verify_claim(&token1).unwrap();
-        manager.get_or_create_bucket(&bucket_key1, &verified_expired);
+        if let Err(err) = manager.verify_claim(&token1, "expired", None, None) {
+            assert_eq!(err, ClaimError::TokenExpired);
+        }
 
         // Add an active bucket
         let active_payload = ClaimPayloadV1 {
@@ -520,8 +524,7 @@ mod tests {
         };
 
         let token2 = manager.sign_claim(&active_payload).unwrap();
-        let (verified_active, bucket_key2) = manager.verify_claim(&token2).unwrap();
-        manager.get_or_create_bucket(&bucket_key2, &verified_active);
+        let _ = manager.verify_claim(&token2, "active", None, None).unwrap();
 
         // Run cleanup
         manager.inner.write().cleanup_expired();
@@ -537,7 +540,7 @@ mod tests {
         let config_keys = vec![(1, [1u8; 32]), (3, [2u8; 32])];
 
         // Create manager with configured keys
-        let manager = ClaimManager::from_keys(config_keys, 2000.0).unwrap();
+        let manager = ClaimManager::from_keys(config_keys).unwrap();
 
         // Test signing and verification
         let payload = ClaimPayloadV1 {
@@ -551,16 +554,17 @@ mod tests {
         };
 
         let token = manager.sign_claim(&payload).unwrap();
-        let (verified, _bucket_key) = manager.verify_claim(&token).unwrap();
+        let (bucket, _) = manager
+            .verify_claim(&token, "test_config", None, None)
+            .unwrap();
 
-        assert_eq!(verified.asset_id, payload.asset_id);
-        assert_eq!(verified.exp_unix, payload.exp_unix);
+        assert_eq!(bucket.exp_unix, payload.exp_unix);
     }
 
     #[test]
     fn test_claim_manager_from_config_without_keys() {
         // Test fallback to random generation
-        let manager = ClaimManager::from_keys(Vec::new(), 3000.0).unwrap();
+        let manager = ClaimManager::from_keys(Vec::new()).unwrap();
 
         let payload = ClaimPayloadV1 {
             exp_unix: 2000000000,
@@ -573,16 +577,18 @@ mod tests {
         };
 
         let token = manager.sign_claim(&payload).unwrap();
-        let (verified, _bucket_key) = manager.verify_claim(&token).unwrap();
+        let (bucket, _) = manager
+            .verify_claim(&token, "test_random", None, None)
+            .unwrap();
 
-        assert_eq!(verified.asset_id, payload.asset_id);
+        assert_eq!(bucket.exp_unix, payload.exp_unix);
     }
 
     #[test]
     fn test_claim_manager_key_rotation() {
         let config_keys = vec![(1, [1u8; 32]), (2, [2u8; 32])];
 
-        let manager = ClaimManager::from_keys(config_keys, 1000.0).unwrap();
+        let manager = ClaimManager::from_keys(config_keys).unwrap();
 
         // Sign with current key (should be kid=1)
         let payload = ClaimPayloadV1 {
@@ -602,13 +608,196 @@ mod tests {
         let token2 = manager.sign_claim(&payload).unwrap();
 
         // Both tokens should be verifiable
-        let (verified1, _bucket_key1) = manager.verify_claim(&token1).unwrap();
-        let (verified2, _bucket_key2) = manager.verify_claim(&token2).unwrap();
+        let (bucket1, _) = manager
+            .verify_claim(&token1, "test_rotation", None, None)
+            .unwrap();
+        let (bucket2, _) = manager
+            .verify_claim(&token2, "test_rotation", None, None)
+            .unwrap();
 
-        assert_eq!(verified1.asset_id, payload.asset_id);
-        assert_eq!(verified2.asset_id, payload.asset_id);
+        assert_eq!(bucket1.exp_unix, payload.exp_unix);
+        assert_eq!(bucket2.exp_unix, payload.exp_unix);
 
         // Tokens should be different (different keys used)
         assert_ne!(token1, token2);
+    }
+
+    #[tokio::test]
+    async fn test_claim_v2_sign_and_verify() {
+        use crate::payload::ClaimPayloadV2;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use xorf::BinaryFuse16;
+
+        let manager = ClaimManager::new();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        // Create a v2 payload with multiple assets
+        let assets = vec![
+            "asset1".to_string(),
+            "asset2".to_string(),
+            "asset3".to_string(),
+        ];
+        let assets_filter = BinaryFuse16::try_from(&assets).unwrap();
+
+        let payload = ClaimPayloadV2 {
+            exp_unix: now + 3600, // Valid for 1 hour
+            nbf_unix: now - 60,   // Valid from 1 minute ago
+            assets_filter,
+            window_len_sec: 300,
+            max_kbps: 5000,
+            max_concurrency: 10,
+            allowed_widths: vec![1920, 1280],
+        };
+
+        // Sign the claim
+        let token = manager.sign_claim(&payload).unwrap();
+        assert!(!token.is_empty());
+
+        // Verify the claim works for included assets
+        for asset_id in &assets {
+            let result = manager.verify_claim(&token, asset_id, None, None);
+            if let Err(e) = &result {
+                eprintln!("Verification failed for asset {}: {:?}", asset_id, e);
+            }
+            assert!(result.is_ok());
+        }
+
+        // Verify the claim fails for non-included assets
+        let result = manager.verify_claim(&token, "non_existent_asset", None, None);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_v2_bucket_creation_and_reuse() {
+        use crate::payload::ClaimPayloadV2;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use xorf::BinaryFuse16;
+
+        let manager = ClaimManager::new();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        let assets = vec!["test_video".to_string()];
+        let assets_filter = BinaryFuse16::try_from(&assets).unwrap();
+
+        let payload = ClaimPayloadV2 {
+            exp_unix: now + 3600, // Valid for 1 hour
+            nbf_unix: now - 60,   // Valid from 1 minute ago
+            assets_filter,
+            window_len_sec: 0,
+            max_kbps: 1000,
+            max_concurrency: 5,
+            allowed_widths: vec![],
+        };
+
+        let token = manager.sign_claim(&payload).unwrap();
+
+        // Test that we can verify the token successfully
+        let result = manager.verify_claim(&token, "test_video", None, None);
+        assert!(result.is_ok());
+
+        // Test that verification works multiple times (bucket reuse)
+        let result2 = manager.verify_claim(&token, "test_video", None, None);
+        assert!(result2.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_v2_claim_width_and_segment_validation() {
+        use crate::payload::ClaimPayloadV2;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use xorf::BinaryFuse16;
+
+        let manager = ClaimManager::new();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        let assets = vec!["test_video".to_string()];
+        let assets_filter = BinaryFuse16::try_from(&assets).unwrap();
+
+        let payload = ClaimPayloadV2 {
+            exp_unix: now + 3600, // Valid for 1 hour
+            nbf_unix: now - 60,   // Valid from 1 minute ago
+            assets_filter,
+            window_len_sec: 120, // 30 segments max
+            max_kbps: 0,
+            max_concurrency: 0,
+            allowed_widths: vec![720, 1080],
+        };
+
+        let token = manager.sign_claim(&payload).unwrap();
+
+        // Test width validation
+        let result = manager.verify_claim(&token, "test_video", None, Some(720));
+        assert!(result.is_ok());
+
+        let result = manager.verify_claim(&token, "test_video", None, Some(1080));
+        assert!(result.is_ok());
+
+        let result = manager.verify_claim(&token, "test_video", None, Some(1920));
+        assert!(result.is_err());
+
+        // Test segment validation
+        let result = manager.verify_claim(&token, "test_video", Some(20), None);
+        assert!(result.is_ok()); // Within window
+
+        let result = manager.verify_claim(&token, "test_video", Some(40), None);
+        assert!(result.is_err()); // Outside window
+    }
+
+    #[tokio::test]
+    async fn test_v2_claim_asset_filter_validation() {
+        use crate::payload::ClaimPayloadV2;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use xorf::BinaryFuse16;
+
+        let manager = ClaimManager::new();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        // Create filter with specific assets
+        let included_assets = vec![
+            "video_a".to_string(),
+            "video_b".to_string(),
+            "video_c".to_string(),
+        ];
+        let assets_filter = BinaryFuse16::try_from(&included_assets).unwrap();
+
+        let payload = ClaimPayloadV2 {
+            exp_unix: now + 3600, // Valid for 1 hour
+            nbf_unix: now - 60,   // Valid from 1 minute ago
+            assets_filter,
+            window_len_sec: 0,
+            max_kbps: 0,
+            max_concurrency: 0,
+            allowed_widths: vec![],
+        };
+
+        let token = manager.sign_claim(&payload).unwrap();
+
+        // Test all included assets pass
+        for asset_id in &included_assets {
+            let result = manager.verify_claim(&token, asset_id, None, None);
+            assert!(result.is_ok(), "Asset {} should be allowed", asset_id);
+        }
+
+        // Test that non-included assets fail
+        let excluded_assets = vec!["video_d", "video_e", "other_asset"];
+        for asset_id in &excluded_assets {
+            let result = manager.verify_claim(&token, asset_id, None, None);
+            assert!(result.is_err(), "Asset {} should be denied", asset_id);
+        }
     }
 }

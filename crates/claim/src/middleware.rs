@@ -1,10 +1,10 @@
-use crate::{ClaimManager, validate_claim_time_and_resource};
+use crate::ClaimManager;
 use axum::extract::{Path, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use tracing::{debug, warn};
+use tracing::warn;
 
 /// Create an error response
 fn err_response(status: StatusCode, message: &str) -> Response {
@@ -48,15 +48,6 @@ pub async fn claim_auth_middleware(
         }
     };
 
-    // Verify the claim token
-    let (claim_payload, bucket_key) = match claim_state.claim_manager.verify_claim(&token) {
-        Ok((payload, key)) => (payload, key),
-        Err(error) => {
-            warn!(?error, "Failed to verify claim");
-            return (error.to_err_code(), error.to_string()).into_response();
-        }
-    };
-
     // Parse filename to extract asset_id, segment info, and width
     let (asset_id, segment_index, width) = match parse_video_filename(&filename) {
         Some(info) => info,
@@ -66,40 +57,24 @@ pub async fn claim_auth_middleware(
         }
     };
 
-    // Validate claim against resource and time window
-    if let Err(error) =
-        validate_claim_time_and_resource(&claim_payload, &asset_id, segment_index, width)
-    {
-        let status = error.to_err_code();
-
-        warn!(
-            asset_id,
-            ?segment_index,
-            %error,
-            "Claim validation failed"
-        );
-
-        return (status, error.to_string()).into_response();
-    }
-
-    debug!(
-        asset_id,
-        ?segment_index,
-        max_kbps = claim_payload.max_kbps,
-        window_sec = claim_payload.window_len_sec,
-        "Claim validated successfully"
-    );
-
-    // Get or create rate limit bucket for this claim
-    let bucket = claim_state
-        .claim_manager
-        .get_or_create_bucket(&bucket_key, &claim_payload);
+    // Verify the claim token
+    let (bucket, bucket_key) =
+        match claim_state
+            .claim_manager
+            .verify_claim(&token, &asset_id, segment_index, width)
+        {
+            Ok(result) => result,
+            Err(err) => {
+                warn!("Failed to verify claim: {}", err);
+                return err_response(err.to_err_code(), &err.to_string());
+            }
+        };
 
     // Try to acquire a connection slot for concurrency control
     let Ok(_guard) = bucket.try_acquire_connection() else {
         warn!(
             asset_id,
-            max_concurrency = claim_payload.max_concurrency,
+            max_concurrency = bucket.max_concurrency,
             "Max concurrency exceeded"
         );
 
@@ -108,14 +83,9 @@ pub async fn claim_auth_middleware(
             "Too many concurrent connections",
         );
     };
-
-    // Store bucket in extensions for the route handler to use
-    req.extensions_mut().insert(bucket);
-
-    // Update last access time
     claim_state.claim_manager.touch_bucket(&bucket_key);
 
-    // Continue to the actual handler
+    req.extensions_mut().insert(bucket);
     next.run(req).await
 }
 

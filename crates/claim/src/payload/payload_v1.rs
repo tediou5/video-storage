@@ -1,10 +1,9 @@
-use crate::error::ClaimError;
+use crate::{error::ClaimError, payload::Payload};
 use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
 
 /// Claim payload structure (to be encrypted)
 /// Claim payload containing access restrictions and metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ClaimPayloadV1 {
     /// Expiration time in Unix timestamp
     pub exp_unix: u32,
@@ -20,6 +19,48 @@ pub struct ClaimPayloadV1 {
     pub max_concurrency: u16,
     /// Allowed video widths/resolutions (empty = all widths allowed)
     pub allowed_widths: Vec<u16>,
+}
+
+impl Payload for ClaimPayloadV1 {
+    fn version(&self) -> u8 {
+        1
+    }
+
+    fn serialize(&self) -> Result<Vec<u8>> {
+        self.serialize_to_bytes()
+    }
+
+    fn deserialize(data: &[u8]) -> Result<Self, ClaimError> {
+        ClaimPayloadV1::deserialize_from_bytes(data)
+    }
+
+    fn verify_asset_id(&self, asset_id: &str) -> bool {
+        self.asset_id == asset_id
+    }
+
+    fn nbf_unix(&self) -> u32 {
+        self.nbf_unix
+    }
+
+    fn exp_unix(&self) -> u32 {
+        self.exp_unix
+    }
+
+    fn window_len_sec(&self) -> u16 {
+        self.window_len_sec
+    }
+
+    fn max_kbps(&self) -> u16 {
+        self.max_kbps
+    }
+
+    fn max_concurrency(&self) -> u16 {
+        self.max_concurrency
+    }
+
+    fn allowed_widths(&self) -> &[u16] {
+        self.allowed_widths.as_slice()
+    }
 }
 
 impl ClaimPayloadV1 {
