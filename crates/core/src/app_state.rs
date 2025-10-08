@@ -38,7 +38,6 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new(
-        token_rate: f64,
         permits: usize,
         workspace: &Path,
         storage_manager: StorageManager,
@@ -51,7 +50,7 @@ impl AppState {
         let jobs_manager = JobSetManager::new(workspace, &tx)?;
 
         // Initialize claim manager
-        let claim_manager = ClaimManager::from_keys(claim_keys, token_rate)
+        let claim_manager = ClaimManager::from_keys(claim_keys)
             .map_err(|error| std::io::Error::new(StdIoErrorKind::InvalidInput, error))?;
 
         let this = Self {

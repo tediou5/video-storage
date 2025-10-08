@@ -2,10 +2,13 @@ use axum::http::StatusCode;
 use thiserror::Error;
 
 /// Claim-related errors with API error codes
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Eq, PartialEq)]
 pub enum ClaimError {
     #[error("Invalid token format")]
     InvalidToken,
+
+    #[error("Unsupported claim version {0}")]
+    UnsupportedVersion(u8),
 
     #[error("Token has expired")]
     TokenExpired,
@@ -37,6 +40,7 @@ impl ClaimError {
     pub fn to_err_code(&self) -> StatusCode {
         match self {
             ClaimError::InvalidToken
+            | ClaimError::UnsupportedVersion(_)
             | ClaimError::TokenExpired
             | ClaimError::TokenNotYetValid
             | ClaimError::AeadFail

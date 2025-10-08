@@ -239,16 +239,18 @@ impl ClaimBucketInner {
     }
 }
 
+pub type BucketKey = [u8; 28];
+
 #[derive(Clone, Debug)]
 pub struct ClaimBucket {
+    permits: Arc<Semaphore>,
     inner: Arc<ClaimBucketInner>,
     /// Expiry time from the claim
-    exp_unix: u32,
+    pub exp_unix: u32,
     /// Maximum bandwidth in kbps (0 = unlimited)
-    max_kbps: u16,
+    pub max_kbps: u16,
     /// Maximum concurrent connections allowed
-    max_concurrency: u16,
-    permits: Arc<Semaphore>,
+    pub max_concurrency: u16,
 }
 
 impl ClaimBucket {
