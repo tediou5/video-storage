@@ -53,6 +53,7 @@ parking_lot.workspace = true
 
 # Local dependencies
 video-storage-claim = { path = "../claim" }
+xorf = { path = "../xorf" }
 
 [dev-dependencies]
 video-storage-test-server = { path = "../test-server" }

@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // Constants for token format
 pub(crate) const MAGIC: &[u8; 4] = b"VSC1";
-pub(crate) const VERSION: u8 = 1;
+
 pub(crate) const ALG_AES_256_GCM: u8 = 1;
 #[allow(dead_code)]
 pub(crate) const ALG_CHACHA20_POLY1305: u8 = 2;
@@ -26,7 +26,7 @@ pub struct ClaimHeader {
 }
 
 impl ClaimHeader {
-    pub fn new(kid: u8, alg: u8) -> Self {
+    pub fn new(kid: u8, alg: u8, version: u8) -> Self {
         let mut nonce = [0u8; 12];
         use rand::RngCore;
         rand::thread_rng().fill_bytes(&mut nonce);
@@ -38,7 +38,7 @@ impl ClaimHeader {
 
         Self {
             magic: *MAGIC,
-            version: VERSION,
+            version,
             kid,
             alg,
             rsv: 0,
@@ -80,7 +80,7 @@ impl ClaimHeader {
         }
 
         let version = bytes[4];
-        if version != VERSION {
+        if version != 1 && version != 2 {
             return Err(ClaimError::InvalidHeader(format!(
                 "Unsupported version: {version}",
             )));

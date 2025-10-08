@@ -170,7 +170,7 @@ impl TestServer {
             .as_secs() as u32;
 
         let request = CreateClaimRequest {
-            asset_id: asset_id.to_string(),
+            asset_id: asset_id.into(),
             nbf_unix: Some(now - 1), // Valid from 1 second ago
             exp_unix: (now as i64 + exp_offset) as u32,
             window_len_sec: Some(300),
@@ -185,6 +185,63 @@ impl TestServer {
         if !response.status().is_success() {
             return Err(format!(
                 "Failed to create claim: {}, url: {url}, request: {request:?}",
+                response.status(),
+            )
+            .into());
+        }
+
+        let claim_response: CreateClaimResponse = response.json().await?;
+        Ok(claim_response.token)
+    }
+
+    /// Create a v2 claim token with multiple asset IDs
+    pub async fn create_claim_v2(
+        &self,
+        client: &reqwest::Client,
+        asset_ids: Vec<String>,
+        allowed_widths: Vec<u16>,
+        exp_offset: i64,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        self.create_claim_v2_with_concurrency(
+            client,
+            asset_ids,
+            Some(allowed_widths),
+            exp_offset,
+            Some(3),
+        )
+        .await
+    }
+
+    /// Create a v2 claim token with multiple asset IDs and concurrency control
+    pub async fn create_claim_v2_with_concurrency(
+        &self,
+        client: &reqwest::Client,
+        asset_ids: Vec<String>,
+        allowed_widths: Option<Vec<u16>>,
+        exp_offset: i64,
+        max_concurrency: Option<u16>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        let request = CreateClaimRequest {
+            asset_id: asset_ids.into(), // This creates AssetsFilter::List
+            nbf_unix: Some(now - 1),    // Valid from 1 second ago
+            exp_unix: (now as i64 + exp_offset) as u32,
+            window_len_sec: Some(300),
+            max_kbps: Some(5000),
+            max_concurrency,
+            allowed_widths,
+        };
+
+        let url = format!("{}/claims", self.int_url());
+        let response = client.post(&url).json(&request).send().await?;
+
+        if !response.status().is_success() {
+            return Err(format!(
+                "Failed to create v2 claim: {}, url: {url}, request: {request:?}",
                 response.status(),
             )
             .into());

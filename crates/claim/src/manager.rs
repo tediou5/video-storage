@@ -89,18 +89,18 @@ impl ClaimManagerInner {
     }
 
     /// Sign a claim and return the base64url-encoded token
-    fn sign_claim(&self, payload: &ClaimPayloadV1) -> Result<String> {
+    fn sign_claim<P: Payload>(&self, payload: &P) -> Result<String> {
         let key = self
             .keys
             .get(&self.current_kid)
             .ok_or_else(|| anyhow!("Key ID {} not found", self.current_kid))?;
 
-        // Create header
-        let header = ClaimHeader::new(self.current_kid, ALG_AES_256_GCM);
+        // Create header with payload version
+        let header = ClaimHeader::new(self.current_kid, ALG_AES_256_GCM, payload.version());
         let header_bytes = header.to_bytes();
 
         // Serialize payload
-        let payload_bytes = payload.serialize_to_bytes()?;
+        let payload_bytes = payload.serialize()?;
 
         // Encrypt using AES-256-GCM
         let cipher_key = Key::<Aes256Gcm>::from_slice(key);
@@ -294,7 +294,7 @@ impl ClaimManager {
     }
 
     /// Sign a claim and return the base64url-encoded token
-    pub fn sign_claim(&self, payload: &ClaimPayloadV1) -> Result<String> {
+    pub fn sign_claim<P: Payload>(&self, payload: &P) -> Result<String> {
         self.inner.read().sign_claim(payload)
     }
 
@@ -620,5 +620,184 @@ mod tests {
 
         // Tokens should be different (different keys used)
         assert_ne!(token1, token2);
+    }
+
+    #[tokio::test]
+    async fn test_claim_v2_sign_and_verify() {
+        use crate::payload::ClaimPayloadV2;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use xorf::BinaryFuse16;
+
+        let manager = ClaimManager::new();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        // Create a v2 payload with multiple assets
+        let assets = vec![
+            "asset1".to_string(),
+            "asset2".to_string(),
+            "asset3".to_string(),
+        ];
+        let assets_filter = BinaryFuse16::try_from(&assets).unwrap();
+
+        let payload = ClaimPayloadV2 {
+            exp_unix: now + 3600, // Valid for 1 hour
+            nbf_unix: now - 60,   // Valid from 1 minute ago
+            assets_filter,
+            window_len_sec: 300,
+            max_kbps: 5000,
+            max_concurrency: 10,
+            allowed_widths: vec![1920, 1280],
+        };
+
+        // Sign the claim
+        let token = manager.sign_claim(&payload).unwrap();
+        assert!(!token.is_empty());
+
+        // Verify the claim works for included assets
+        for asset_id in &assets {
+            let result = manager.verify_claim(&token, asset_id, None, None);
+            if let Err(e) = &result {
+                eprintln!("Verification failed for asset {}: {:?}", asset_id, e);
+            }
+            assert!(result.is_ok());
+        }
+
+        // Verify the claim fails for non-included assets
+        let result = manager.verify_claim(&token, "non_existent_asset", None, None);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_v2_bucket_creation_and_reuse() {
+        use crate::payload::ClaimPayloadV2;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use xorf::BinaryFuse16;
+
+        let manager = ClaimManager::new();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        let assets = vec!["test_video".to_string()];
+        let assets_filter = BinaryFuse16::try_from(&assets).unwrap();
+
+        let payload = ClaimPayloadV2 {
+            exp_unix: now + 3600, // Valid for 1 hour
+            nbf_unix: now - 60,   // Valid from 1 minute ago
+            assets_filter,
+            window_len_sec: 0,
+            max_kbps: 1000,
+            max_concurrency: 5,
+            allowed_widths: vec![],
+        };
+
+        let token = manager.sign_claim(&payload).unwrap();
+
+        // Test that we can verify the token successfully
+        let result = manager.verify_claim(&token, "test_video", None, None);
+        assert!(result.is_ok());
+
+        // Test that verification works multiple times (bucket reuse)
+        let result2 = manager.verify_claim(&token, "test_video", None, None);
+        assert!(result2.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_v2_claim_width_and_segment_validation() {
+        use crate::payload::ClaimPayloadV2;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use xorf::BinaryFuse16;
+
+        let manager = ClaimManager::new();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        let assets = vec!["test_video".to_string()];
+        let assets_filter = BinaryFuse16::try_from(&assets).unwrap();
+
+        let payload = ClaimPayloadV2 {
+            exp_unix: now + 3600, // Valid for 1 hour
+            nbf_unix: now - 60,   // Valid from 1 minute ago
+            assets_filter,
+            window_len_sec: 120, // 30 segments max
+            max_kbps: 0,
+            max_concurrency: 0,
+            allowed_widths: vec![720, 1080],
+        };
+
+        let token = manager.sign_claim(&payload).unwrap();
+
+        // Test width validation
+        let result = manager.verify_claim(&token, "test_video", None, Some(720));
+        assert!(result.is_ok());
+
+        let result = manager.verify_claim(&token, "test_video", None, Some(1080));
+        assert!(result.is_ok());
+
+        let result = manager.verify_claim(&token, "test_video", None, Some(1920));
+        assert!(result.is_err());
+
+        // Test segment validation
+        let result = manager.verify_claim(&token, "test_video", Some(20), None);
+        assert!(result.is_ok()); // Within window
+
+        let result = manager.verify_claim(&token, "test_video", Some(40), None);
+        assert!(result.is_err()); // Outside window
+    }
+
+    #[tokio::test]
+    async fn test_v2_claim_asset_filter_validation() {
+        use crate::payload::ClaimPayloadV2;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use xorf::BinaryFuse16;
+
+        let manager = ClaimManager::new();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        // Create filter with specific assets
+        let included_assets = vec![
+            "video_a".to_string(),
+            "video_b".to_string(),
+            "video_c".to_string(),
+        ];
+        let assets_filter = BinaryFuse16::try_from(&included_assets).unwrap();
+
+        let payload = ClaimPayloadV2 {
+            exp_unix: now + 3600, // Valid for 1 hour
+            nbf_unix: now - 60,   // Valid from 1 minute ago
+            assets_filter,
+            window_len_sec: 0,
+            max_kbps: 0,
+            max_concurrency: 0,
+            allowed_widths: vec![],
+        };
+
+        let token = manager.sign_claim(&payload).unwrap();
+
+        // Test all included assets pass
+        for asset_id in &included_assets {
+            let result = manager.verify_claim(&token, asset_id, None, None);
+            assert!(result.is_ok(), "Asset {} should be allowed", asset_id);
+        }
+
+        // Test that non-included assets fail
+        let excluded_assets = vec!["video_d", "video_e", "other_asset"];
+        for asset_id in &excluded_assets {
+            let result = manager.verify_claim(&token, asset_id, None, None);
+            assert!(result.is_err(), "Asset {} should be denied", asset_id);
+        }
     }
 }

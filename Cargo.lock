@@ -3276,6 +3276,7 @@ dependencies = [
  "video-storage-test-server",
  "walkdir",
  "warp",
+ "xorf",
 ]
 
 [[package]]
