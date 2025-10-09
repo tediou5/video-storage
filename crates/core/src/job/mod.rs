@@ -87,7 +87,7 @@ pub trait Job: Clone + Sized + Send + Sync + 'static {
 
             let result = self.gen_job(state.clone()).await;
             let Err(error) = result.expect("Tokio task Join failed") else {
-                // remove job from JobsManager if process successfully
+                // Remove job from JobsManager when processed successfully
                 return JobResult::<_, Self>::from(self.next_job(state.clone()));
             };
 
@@ -149,10 +149,10 @@ impl Action {
             Action::Cleanup => {
                 info!(job_id, kind, "Performing cleanup");
                 match kind {
-                    "convert-job" => {
+                    CONVERT_KIND => {
                         let _ = tokio::fs::remove_file(state.uploads_dir().join(job_id)).await;
                     }
-                    "upload-job" => {
+                    UPLOAD_KIND => {
                         let _ = tokio::fs::remove_dir_all(state.videos_dir().join(job_id)).await;
                     }
                     _ => {}
@@ -188,5 +188,73 @@ impl FailureJob {
         for action in self.actions {
             Action::execute_action(action, state, &self.job_id, self.kind).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_state::AppState;
+    use crate::opendal::{StorageBackend, StorageConfig, StorageManager};
+    use tempfile::{TempDir, tempdir};
+
+    async fn build_state() -> (AppState, TempDir) {
+        let workspace = tempdir().expect("create tempdir");
+        let workspace_path = workspace.path().to_path_buf();
+
+        let storage_manager = StorageManager::new(StorageConfig {
+            backend: StorageBackend::Local,
+            workspace: workspace_path.clone(),
+        })
+        .await
+        .expect("initialize storage manager");
+
+        let state = AppState::new(1, &workspace_path, storage_manager, None, Vec::new())
+            .await
+            .expect("create app state");
+
+        (state, workspace)
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_upload_file_for_convert_jobs() {
+        let (state, workspace) = build_state().await;
+        let job_id = "convert-job-id";
+        let upload_path = state.uploads_dir().join(job_id);
+        tokio::fs::write(&upload_path, b"dummy")
+            .await
+            .expect("write upload file");
+        assert!(tokio::fs::metadata(&upload_path).await.is_ok());
+
+        let failure_job = FailureJob::new(job_id.to_string(), CONVERT_KIND, vec![Action::Cleanup]);
+        failure_job.execute_actions(&state).await;
+
+        assert!(tokio::fs::metadata(&upload_path).await.is_err());
+        drop(state);
+        tokio::task::yield_now().await;
+        drop(workspace);
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_video_directory_for_upload_jobs() {
+        let (state, workspace) = build_state().await;
+        let job_id = "upload-job-id";
+        let video_dir = state.videos_dir().join(job_id);
+        tokio::fs::create_dir_all(&video_dir)
+            .await
+            .expect("create video directory");
+        let nested_file = video_dir.join("segment.ts");
+        tokio::fs::write(&nested_file, b"data")
+            .await
+            .expect("write nested file");
+        assert!(tokio::fs::metadata(&video_dir).await.is_ok());
+
+        let failure_job = FailureJob::new(job_id.to_string(), UPLOAD_KIND, vec![Action::Cleanup]);
+        failure_job.execute_actions(&state).await;
+
+        assert!(tokio::fs::metadata(&video_dir).await.is_err());
+        drop(state);
+        tokio::task::yield_now().await;
+        drop(workspace);
     }
 }
