@@ -157,7 +157,12 @@ mod tests {
         let fut1 = Box::pin(async {});
         let fut2 = Box::pin(async {});
         assert!(stream_map.add_if_not_in_progress(index, fut1));
+        assert!(stream_map.in_progress.contains_key(&index));
+        assert!(stream_map.queue.is_empty());
+        assert!(!stream_map.is_terminated());
         assert!(!stream_map.add_if_not_in_progress(index, fut2));
+        assert!(stream_map.queue.is_empty());
+        assert!(stream_map.in_progress.contains_key(&index));
     }
 
     #[test]
@@ -205,7 +210,7 @@ mod tests {
         assert!(stream_map.in_progress.contains_key(&1));
         assert_eq!(stream_map.queue.len(), 1);
 
-        // Push fut22 into farm index 2, we have 2 in progress futures now
+        // Push fut21 into farm index 2, we have 2 in-progress futures now
         stream_map.push(2, fut21);
         assert_eq!(stream_map.in_progress.len(), 2);
         assert!(stream_map.in_progress.contains_key(&2));
