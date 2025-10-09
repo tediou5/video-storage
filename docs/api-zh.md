@@ -23,7 +23,7 @@ Video Storage 服务提供两组 API：
 
 | 参数 | 类型 | 必填 | 说明 | 限制 |
 |-----|------|-----|------|------|
-| asset_id | string | 是 | 资源ID，对应视频的 job_id | 不能为空 |
+| asset_id | string\|array | 是 | 资源ID，对应视频的 job_id；字符串=v1凭证(单资产)，数组=v2凭证(多资产) | 不能为空 |
 | exp_unix | u32 | 是 | 令牌过期时间（Unix时间戳） | 必须大于 nbf_unix |
 | nbf_unix | u32 | 否 | 令牌生效时间（Unix时间戳） | 默认为当前时间 |
 | window_len_sec | u16 | 否 | 时间窗口长度（秒） | 0-65535，默认为0（无限制） |
@@ -50,7 +50,7 @@ Video Storage 服务提供两组 API：
 #### CURL 示例
 
 ```bash
-# 创建一个简单的令牌（所有限制参数使用默认值）
+# 创建一个简单的v1令牌（单资产，所有限制参数使用默认值）
 curl -X POST http://localhost:32146/claims \
   -H "Content-Type: application/json" \
   -d '{
@@ -58,7 +58,7 @@ curl -X POST http://localhost:32146/claims \
     "exp_unix": '$(($(date +%s) + 3600))'
   }'
 
-# 创建一个带部分限制的令牌
+# 创建一个带部分限制的v1令牌
 curl -X POST http://localhost:32146/claims \
   -H "Content-Type: application/json" \
   -d '{
@@ -68,7 +68,18 @@ curl -X POST http://localhost:32146/claims \
     "allowed_widths": [1920, 1280]
   }'
 
-# 创建一个完整配置的令牌
+# 创建一个v2令牌（多资产访问）
+curl -X POST http://localhost:32146/claims \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": ["video1", "video2", "video3"],
+    "exp_unix": '$(($(date +%s) + 3600))',
+    "max_kbps": 8000,
+    "max_concurrency": 5,
+    "allowed_widths": [1920, 1280]
+  }'
+
+# 创建一个完整配置的v1令牌
 curl -X POST http://localhost:32146/claims \
   -H "Content-Type: application/json" \
   -d '{
@@ -283,7 +294,7 @@ curl http://localhost:32146/waitlist
 ### 2. 创建访问令牌
 
 ```bash
-# 创建一个最简单的令牌（无任何限制）
+# 创建一个最简单的v1令牌（单资产，无任何限制）
 curl -X POST http://localhost:32146/claims \
   -H "Content-Type: application/json" \
   -d '{
@@ -291,7 +302,7 @@ curl -X POST http://localhost:32146/claims \
     "exp_unix": '$(($(date +%s) + 86400))'
   }'
 
-# 创建一个带速率限制的令牌
+# 创建一个带速率限制的v1令牌
 curl -X POST http://localhost:32146/claims \
   -H "Content-Type: application/json" \
   -d '{
@@ -301,7 +312,18 @@ curl -X POST http://localhost:32146/claims \
     "max_concurrency": 5
   }'
 
-# 创建一个完整配置的令牌
+# 创建一个v2令牌（多资产访问）
+curl -X POST http://localhost:32146/claims \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": ["myvideo", "episode1", "episode2"],
+    "exp_unix": '$(($(date +%s) + 86400))',
+    "max_kbps": 15000,
+    "max_concurrency": 3,
+    "allowed_widths": [1920, 1280]
+  }'
+
+# 创建一个完整配置的v1令牌
 curl -X POST http://localhost:32146/claims \
   -H "Content-Type: application/json" \
   -d '{
@@ -383,12 +405,18 @@ s3_secret_access_key = "minioadmin"
    - 23-28: 标准质量，平衡质量和文件大小
    - 28-35: 低质量，文件较小
 
-3. **令牌参数说明**:
+3. **令牌版本选择**:
+   - **v1令牌(单资产)**: asset_id 为字符串格式，适用于单个视频访问
+   - **v2令牌(多资产)**: asset_id 为数组格式，适用于批量访问、播放列表等场景
+   - 系统根据 asset_id 参数类型自动选择版本
+
+4. **令牌参数说明**:
    - 所有限制参数（window_len_sec, max_kbps, max_concurrency, allowed_widths）均为可选
    - 未指定或设为 0 表示无限制
    - allowed_widths 为空数组表示允许所有分辨率
+   - v2令牌建议资产数量控制在10000以内以保证最佳性能
 
-4. **令牌安全**:
+5. **令牌安全**:
    - claim 令牌应该妥善保管
    - 不要在客户端代码中硬编码令牌
    - 建议使用 HTTPS 传输令牌
@@ -461,7 +489,8 @@ RUST_LOG=info video-storage
 
 ### v1.0.0 (当前版本)
 - 支持 HLS 视频流
-- Claim 令牌认证
+- Claim 令牌认证 (v1单资产 + v2多资产)
+- 高效的多资产过滤器 (BinaryFuse16)
 - 速率限制功能
 - S3 存储支持
 - 灵活的令牌限制参数（全部可选）

@@ -69,13 +69,17 @@ video-storage/
 │   │   │   ├── manager.rs        # Unified ClaimManager (keys + buckets)
 │   │   │   ├── bucket.rs         # Token bucket and claim bucket implementation
 │   │   │   ├── header.rs         # Claim header with nonce + create_at
-│   │   │   ├── payload_v1.rs     # Claim payload serialization
+│   │   │   ├── payload/          # Claim payload formats
+│   │   │   │   ├── mod.rs        # Common payload traits and interfaces
+│   │   │   │   ├── payload_v1.rs # v1 payload (single asset)
+│   │   │   │   └── payload_v2.rs # v2 payload (multi assets with filter)
 │   │   │   ├── middleware.rs     # HTTP middleware for claim auth
 │   │   │   ├── create_request.rs # Claim creation API structures
 │   │   │   └── error.rs          # Claim error types
 │   │   └── Cargo.toml
+│   ├── xorf/                     # Binary fuse filters for efficient membership testing
+│   ├── twox-hash/                # Fast non-cryptographic hash functions
 │   └── test-server/              # Test utilities crate
-├──
 ├── docs/                         # Project documentation
 ├── scripts/                      # Development & deployment scripts
 └── .github/                      # GitHub workflows & templates
