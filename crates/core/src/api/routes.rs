@@ -249,7 +249,7 @@ pub async fn serve_video(
     let vals = path.split('-').collect::<Vec<_>>();
 
     let len = vals.len();
-    if !(2..=3).contains(&len) {
+    if !(1..=3).contains(&len) {
         warn!(%filename, "Invalid filename");
         return Ok(err_response(StatusCode::BAD_REQUEST, "Invalid filename"));
     }
