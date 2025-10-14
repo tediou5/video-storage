@@ -349,16 +349,19 @@ pub fn convert(
         id: job_id,
         crf,
         scales,
+        codecs,
         ..
     } = job;
 
+    // Create outputs for each codec+resolution combination
     let mut outputs = Vec::new();
-    for (i, scale) in scales.iter().enumerate() {
+
+    for (scale_idx, scale) in scales.iter().enumerate() {
         let w = scale.width();
         let out_dir = output.join(w.to_string());
         std::fs::create_dir_all(&out_dir)?;
 
-        for codec in job.codecs.iter() {
+        for codec in codecs.iter() {
             let frame_pipeline: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_AUDIO.into();
             let progress_filter = ProgressCallBackFilter::new(progress_callbacker.clone());
             let pipe = frame_pipeline.filter("progress", Box::new(progress_filter));
@@ -371,7 +374,7 @@ pub fn convert(
             let mut output_builder = Output::from(playlist_path.to_str().unwrap())
                 .add_frame_pipeline(pipe)
                 .add_stream_map("0:a?")
-                .add_stream_map(format!("v{i}"));
+                .add_stream_map(format!("v{scale_idx}{}", codec.segment_prefix("")));
             output_builder = codec.apply_codec_settings(output_builder);
             output_builder = output_builder.set_video_codec_opt("crf", crf.to_string());
             output_builder = output_builder
@@ -386,14 +389,31 @@ pub fn convert(
         }
     }
 
+    let mut filter_parts = Vec::new();
+
+    // Create scale filters for each resolution
     let target_scales = scales.len();
-    let (outs, scales_str): (String, String) = scales
-        .iter()
-        .map(From::from)
-        .enumerate()
-        .map(|(i, (w, h))| (format!("[out{i}]"), format!(";[out{i}]scale={w}:{h}[v{i}]")))
-        .unzip();
-    let graphs = format!("[0:v]split={target_scales}{outs}{scales_str}");
+    let scale_outputs: String = (0..target_scales).map(|i| format!("[scaled{i}]")).collect();
+    filter_parts.push(format!("[0:v]split={target_scales}{scale_outputs}"));
+
+    for (scale_idx, scale) in scales.iter().enumerate() {
+        let (w, h) = scale.into();
+        filter_parts.push(format!(
+            "[scaled{scale_idx}]scale={w}:{h}[v{scale_idx}_base]"
+        ));
+    }
+
+    // Create codec-specific streams for each resolution
+    for (scale_idx, _scale) in scales.iter().enumerate() {
+        let len = codecs.len();
+        let codec_outputs: String = codecs
+            .iter()
+            .map(|codec| format!("[v{scale_idx}{}]", codec.segment_prefix("")))
+            .collect();
+        filter_parts.push(format!("[v{scale_idx}_base]split={len}{codec_outputs}",));
+    }
+
+    let graphs = filter_parts.join(";");
     debug!(%job_id, %crf, ?input, ?graphs, "Converting to HLS");
 
     let input = Input::from(input);
