@@ -410,7 +410,7 @@ pub fn convert(
             .iter()
             .map(|codec| format!("[v{scale_idx}{}]", codec.segment_prefix("")))
             .collect();
-        filter_parts.push(format!("[v{scale_idx}_base]split={len}{codec_outputs}",));
+        filter_parts.push(format!("[v{scale_idx}_base]split={len}{codec_outputs}"));
     }
 
     let graphs = filter_parts.join(";");
