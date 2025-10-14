@@ -146,6 +146,15 @@ curl -X POST "http://localhost:32146/upload?id=video123&crf=23" \
   --data-binary @input.mp4
 ```
 
+#### 只转码h265(特殊用例)
+
+```bash
+# 上传视频文件进行转换，只转码h265
+curl -g -X POST "http://localhost:32146/upload?id=video2&crf=38&codecs[0]=h265" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @input.mp4
+```
+
 ### 3. 查询任务队列状态
 
 获取当前待处理任务的统计信息。
@@ -344,11 +353,26 @@ TOKEN="your_token_here"
 
 # 获取 HLS 主播放列表
 curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:32145/videos/myvideo-1080.m3u8 > playlist.m3u8
+  http://localhost:32145/videos/1080/myvideo.m3u8 > playlist.m3u8
 
 # 获取视频片段
 curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:32145/videos/myvideo-1080-00001.ts > segment1.ts
+  http://localhost:32145/videos/1080/myvideo-00001.ts > segment1.ts
+```
+
+#### 获取h265视频片段
+
+```bash
+# 假设返回的令牌为 TOKEN
+TOKEN="your_token_here"
+
+# 获取 HLS 主播放列表
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:32145/videos/1080/myvideo-h265.m3u8 > h265-playlist.m3u8
+
+# 获取h265视频片段
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:32145/videos/1080/myvideo-h265-00001.ts > h265-segment1.ts
 ```
 
 ## 配置说明
@@ -414,40 +438,12 @@ s3_secret_access_key = "minioadmin"
    - 所有限制参数（window_len_sec, max_kbps, max_concurrency, allowed_widths）均为可选
    - 未指定或设为 0 表示无限制
    - allowed_widths 为空数组表示允许所有分辨率
-   - v2令牌建议资产数量控制在10000以内以保证最佳性能
-
-5. **令牌安全**:
-   - claim 令牌应该妥善保管
-   - 不要在客户端代码中硬编码令牌
-   - 建议使用 HTTPS 传输令牌
+   - v2令牌建议资产数量控制在100以内以保证最佳性能
 
 5. **速率限制**:
    - 合理配置速率限制参数，避免带宽滥用
    - max_kbps = 0 表示不限速
    - max_concurrency = 0 表示不限制并发数
-
-6. **缓存策略**:
-   - 视频文件默认设置 1 小时缓存
-   - 建议配合 CDN 使用以提高性能
-
-7. **存储后端**:
-   - 本地存储适合开发测试
-   - 生产环境建议使用 S3 兼容存储
-   - 支持自动故障转移（优先本地，其次 S3）
-
-8. **视频格式**:
-   - 输入支持 MP4 格式
-   - 输出为 HLS 格式（.m3u8 + .ts 文件）
-   - 自动生成多分辨率版本
-
-## 性能优化建议
-
-1. **并发处理**: 通过 `permits` 参数控制并发转换任务数
-2. **令牌桶速率**: 通过 `token_rate` 控制全局带宽
-3. **缓存策略**: 使用 CDN 缓存静态视频文件
-4. **存储选择**: 生产环境使用对象存储（S3）提高可扩展性
-5. **CRF 调优**: 根据实际需求平衡质量和文件大小
-6. **令牌限制**: 根据用户级别设置不同的速率限制
 
 ## 监控和运维
 

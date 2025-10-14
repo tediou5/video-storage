@@ -237,7 +237,16 @@ pub async fn serve_video(
     AxumPath(filename): AxumPath<String>,
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
-    let vals = filename.split(&['-', '.'][..]).collect::<Vec<_>>();
+    let path_and_suffix = filename.split('.').collect::<Vec<_>>();
+
+    if path_and_suffix.len() != 2 {
+        warn!(%filename, "Invalid filename");
+        return Ok(err_response(StatusCode::BAD_REQUEST, "Invalid filename"));
+    }
+
+    let path = path_and_suffix[0];
+
+    let vals = path.split('-').collect::<Vec<_>>();
 
     let len = vals.len();
     if !(2..=3).contains(&len) {
@@ -490,6 +499,7 @@ mod tests {
         // Should use default scales when not specified
         assert_eq!(job.scales.len(), 3); // Default has 3 scales
         assert_eq!(&*job.scales, &crate::job::convert::RESOLUTIONS);
+        assert_eq!(&*job.codecs, &crate::job::convert::DEFAULT_CODECS);
     }
 
     #[test]
@@ -528,6 +538,9 @@ mod tests {
         let simple_job = ConvertJob::new("simple".to_string(), 25, Scales::new());
         let query_result = serde_qs::to_string(&simple_job);
         assert!(query_result.is_ok());
+        let query_string = query_result.unwrap();
+        // Default codecs should be skipped for backward compatibility
+        assert!(!query_string.contains("codecs"));
     }
 
     #[test]
@@ -552,6 +565,7 @@ mod tests {
         // Both should use default scales
         assert_eq!(&*original_job.scales, &crate::job::convert::RESOLUTIONS);
         assert_eq!(&*parsed_job.scales, &crate::job::convert::RESOLUTIONS);
+        assert_eq!(&*parsed_job.codecs, &crate::job::convert::DEFAULT_CODECS);
 
         // Test manual query string parsing
         let manual_query = "id=manual_test&crf=35";
@@ -559,6 +573,7 @@ mod tests {
         assert_eq!(manual_job.id, "manual_test");
         assert_eq!(manual_job.crf, 35);
         assert_eq!(&*manual_job.scales, &crate::job::convert::RESOLUTIONS);
+        assert_eq!(&*manual_job.codecs, &crate::job::convert::DEFAULT_CODECS);
     }
 
     #[test]
@@ -602,5 +617,74 @@ mod tests {
         assert_eq!(parsed_job.scales.len(), 1);
         assert_eq!(parsed_job.scales[0].width(), 480);
         assert_eq!(parsed_job.scales[0].height(), 854);
+        assert_eq!(&*parsed_job.codecs, &crate::job::convert::DEFAULT_CODECS);
+    }
+
+    #[test]
+    fn test_upload_query_parameter_parsing_with_codecs() {
+        use crate::job::convert::{ConvertCodec, ConvertJob};
+
+        let query_string = "id=codec_job&crf=32&codecs[0]=h265";
+        let job: ConvertJob = serde_qs::from_str(query_string).unwrap();
+
+        assert_eq!(job.id, "codec_job");
+        assert_eq!(job.crf, 32);
+        assert_eq!(job.codecs.len(), 1);
+        assert_eq!(job.codecs[0], ConvertCodec::H265);
+    }
+
+    #[tokio::test]
+    async fn test_upload_mp4_raw_accepts_h265_only() {
+        use crate::opendal::{StorageBackend, StorageConfig, StorageManager};
+        use axum::body::Body;
+        use axum::http::Request;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let storage_manager = StorageManager::new(StorageConfig {
+            backend: StorageBackend::Local,
+            workspace: temp_dir.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+
+        // Use zero permits so background worker never starts processing the job during the test
+        let state = AppState::new(0, temp_dir.path(), storage_manager, None, Vec::new())
+            .await
+            .unwrap();
+
+        let job_id = "codecjob";
+        let uri = format!("/upload?id={job_id}&crf=28&codecs[0]=h265");
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "video/mp4")
+            .body(Body::from("fake mp4 data"))
+            .unwrap();
+
+        let response = upload_mp4_raw(Extension(state.clone()), request)
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let upload_response: UploadResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(upload_response.job_id, job_id);
+
+        let jobs = state.jobs_manager.jobs.lock().await;
+        let job_json = jobs
+            .iter()
+            .find_map(|job| {
+                if job.id() == job_id {
+                    Some(job.to_json())
+                } else {
+                    None
+                }
+            })
+            .expect("job should be enqueued");
+        assert_eq!(job_json["codecs"], serde_json::json!(["h265"]));
     }
 }
