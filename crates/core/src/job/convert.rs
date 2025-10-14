@@ -104,6 +104,107 @@ impl Default for Scales {
     }
 }
 
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConvertCodec {
+    Vp9,
+    H265,
+}
+
+pub const DEFAULT_CODECS: [ConvertCodec; 2] = [ConvertCodec::Vp9, ConvertCodec::H265];
+
+impl ConvertCodec {
+    fn playlist_suffix(self) -> &'static str {
+        match self {
+            ConvertCodec::Vp9 => "",
+            ConvertCodec::H265 => "-h265",
+        }
+    }
+
+    fn playlist_filename(self, job_id: &str) -> String {
+        format!("{job_id}{}.m3u8", self.playlist_suffix())
+    }
+
+    fn segment_prefix(self, job_id: &str) -> String {
+        match self {
+            ConvertCodec::Vp9 => job_id.to_string(),
+            ConvertCodec::H265 => format!("{job_id}-h265"),
+        }
+    }
+
+    fn init_filename(self, job_id: &str) -> String {
+        format!("{}-init.mp4", self.segment_prefix(job_id))
+    }
+
+    fn audio_encoder(self) -> &'static str {
+        match self {
+            ConvertCodec::Vp9 => "libopus",
+            ConvertCodec::H265 => "aac",
+        }
+    }
+
+    fn video_encoder(self) -> &'static str {
+        match self {
+            ConvertCodec::Vp9 => "libvpx-vp9",
+            ConvertCodec::H265 => "libx265",
+        }
+    }
+
+    fn codecs_attribute(self) -> &'static str {
+        match self {
+            ConvertCodec::Vp9 => "vp09.00.51.08.01.01.01.01.00,opus",
+            ConvertCodec::H265 => "hvc1.1.6.L93.B0,mp4a.40.2",
+        }
+    }
+
+    fn apply_codec_settings(self, output: Output) -> Output {
+        match self {
+            ConvertCodec::Vp9 => output
+                .set_audio_codec(self.audio_encoder())
+                .set_video_codec(self.video_encoder()),
+            ConvertCodec::H265 => output
+                .set_audio_codec(self.audio_encoder())
+                .set_video_codec(self.video_encoder()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct ConvertCodecs(Vec<ConvertCodec>);
+
+impl ConvertCodecs {
+    pub fn new() -> Self {
+        Self(DEFAULT_CODECS.to_vec())
+    }
+
+    pub fn from_vec(codecs: Vec<ConvertCodec>) -> Self {
+        Self(codecs)
+    }
+
+    pub fn skip_serialize(&self) -> bool {
+        self.0.is_empty() || self.0.as_slice() == DEFAULT_CODECS
+    }
+}
+
+impl Deref for ConvertCodecs {
+    type Target = [ConvertCodec];
+
+    fn deref(&self) -> &Self::Target {
+        if self.0.is_empty() {
+            &DEFAULT_CODECS
+        } else {
+            &self.0[..]
+        }
+    }
+}
+
+impl Default for ConvertCodecs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConvertJob {
     pub id: String,
@@ -112,6 +213,10 @@ pub struct ConvertJob {
     #[serde(default)]
     #[serde(skip_serializing_if = "Scales::skip_serialize")]
     pub scales: Scales,
+
+    #[serde(default)]
+    #[serde(skip_serializing_if = "ConvertCodecs::skip_serialize")]
+    pub codecs: ConvertCodecs,
 
     #[serde(default)]
     #[serde(skip)]
@@ -124,6 +229,7 @@ impl ConvertJob {
             id,
             crf,
             scales,
+            codecs: ConvertCodecs::default(),
             retry_times: Arc::new(AtomicU8::new(0)),
         }
     }
@@ -232,7 +338,7 @@ impl Job for ConvertJob {
     }
 }
 
-/// Convert MP4 to a VP9 variant.
+/// Convert MP4 to requested codec variants (VP9, H265).
 pub fn convert(
     job: &ConvertJob,
     input: &str,
@@ -243,50 +349,71 @@ pub fn convert(
         id: job_id,
         crf,
         scales,
+        codecs,
         ..
     } = job;
 
-    let outputs = scales
-        .iter()
-        .enumerate()
-        .map(|(i, scale)| {
-            let w = scale.width();
+    // Create outputs for each codec+resolution combination
+    let mut outputs = Vec::new();
+
+    for (scale_idx, scale) in scales.iter().enumerate() {
+        let w = scale.width();
+        let out_dir = output.join(w.to_string());
+        std::fs::create_dir_all(&out_dir)?;
+
+        for codec in codecs.iter() {
             let frame_pipeline: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_AUDIO.into();
             let progress_filter = ProgressCallBackFilter::new(progress_callbacker.clone());
             let pipe = frame_pipeline.filter("progress", Box::new(progress_filter));
 
-            let out_dir = output.join(w.to_string());
-            std::fs::create_dir_all(&out_dir)?;
-
-            let playlist_path = out_dir.join(format!("{job_id}.m3u8"));
+            let playlist_path = out_dir.join(codec.playlist_filename(job_id));
             let output_str = out_dir.to_str().unwrap();
-            let hls_segment_filename = format!("{output_str}/{job_id}-%03d.m4s");
+            let hls_segment_filename =
+                format!("{output_str}/{}-%03d.m4s", codec.segment_prefix(job_id));
 
-            Ok(Output::from(playlist_path.to_str().unwrap())
+            let mut output_builder = Output::from(playlist_path.to_str().unwrap())
                 .add_frame_pipeline(pipe)
-                .set_video_codec_opt("crf", crf.to_string())
                 .add_stream_map("0:a?")
-                .add_stream_map(format!("v{i}"))
-                .set_audio_codec("libopus")
-                .set_video_codec("libvpx-vp9")
-                // hls settings
+                .add_stream_map(format!("v{scale_idx}{}", codec.segment_prefix("")));
+            output_builder = codec.apply_codec_settings(output_builder);
+            output_builder = output_builder.set_video_codec_opt("crf", crf.to_string());
+            output_builder = output_builder
                 .set_format("hls")
                 .set_format_opt("hls_time", HLS_SEGMENT_DURATION.to_string())
                 .set_format_opt("hls_segment_type", "fmp4")
                 .set_format_opt("hls_playlist_type", "vod")
-                .set_format_opt("hls_fmp4_init_filename", format!("{job_id}-init.mp4"))
-                .set_format_opt("hls_segment_filename", hls_segment_filename))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+                .set_format_opt("hls_fmp4_init_filename", codec.init_filename(job_id))
+                .set_format_opt("hls_segment_filename", hls_segment_filename);
 
+            outputs.push(output_builder);
+        }
+    }
+
+    let mut filter_parts = Vec::new();
+
+    // Create scale filters for each resolution
     let target_scales = scales.len();
-    let (outs, scales_str): (String, String) = scales
-        .iter()
-        .map(From::from)
-        .enumerate()
-        .map(|(i, (w, h))| (format!("[out{i}]"), format!(";[out{i}]scale={w}:{h}[v{i}]")))
-        .unzip();
-    let graphs = format!("[0:v]split={target_scales}{outs}{scales_str}");
+    let scale_outputs: String = (0..target_scales).map(|i| format!("[scaled{i}]")).collect();
+    filter_parts.push(format!("[0:v]split={target_scales}{scale_outputs}"));
+
+    for (scale_idx, scale) in scales.iter().enumerate() {
+        let (w, h) = scale.into();
+        filter_parts.push(format!(
+            "[scaled{scale_idx}]scale={w}:{h}[v{scale_idx}_base]"
+        ));
+    }
+
+    // Create codec-specific streams for each resolution
+    for (scale_idx, _scale) in scales.iter().enumerate() {
+        let len = codecs.len();
+        let codec_outputs: String = codecs
+            .iter()
+            .map(|codec| format!("[v{scale_idx}{}]", codec.segment_prefix("")))
+            .collect();
+        filter_parts.push(format!("[v{scale_idx}_base]split={len}{codec_outputs}"));
+    }
+
+    let graphs = filter_parts.join(";");
     debug!(%job_id, %crf, ?input, ?graphs, "Converting to HLS");
 
     let input = Input::from(input);
@@ -389,12 +516,15 @@ pub fn create_master_playlist(job: &ConvertJob, input: &str, output: &Path) -> a
     // #EXT-X-VERSION:3
     // #EXT-X-INDEPENDENT-SEGMENTS
     // Generate entries for each scale in the job
-    for (w, h) in job.scales.iter().map(From::from) {
-        let bandwidth = Scales::bandwidth(w);
-        content.push_str(&format!(
-            "#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={w}x{h},CODECS=\"vp09.00.51.08.01.01.01.01.00,opus\"\n"
-        ));
-        content.push_str(&format!("{w}/{job_id}.m3u8\n"));
+    for codec in job.codecs.iter() {
+        for (w, h) in job.scales.iter().map(From::from) {
+            let bandwidth = Scales::bandwidth(w);
+            let codecs_attr = codec.codecs_attribute();
+            content.push_str(&format!(
+                "#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={w}x{h},CODECS=\"{codecs_attr}\"\n"
+            ));
+            content.push_str(&format!("{w}/{}\n", codec.playlist_filename(job_id)));
+        }
     }
 
     file.write_all(content.as_bytes())?;
@@ -619,6 +749,7 @@ mod tests {
             id: "test-job-4".to_string(),
             crf: 20,
             scales: Scales::new(),
+            codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),
         };
 
@@ -626,6 +757,7 @@ mod tests {
 
         // Should not contain scales field when using defaults
         assert!(!json.contains("scales"));
+        assert!(!json.contains("codecs"));
         assert!(json.contains(r#""id":"test-job-4""#));
         assert!(json.contains(r#""crf":20"#));
     }
@@ -637,6 +769,7 @@ mod tests {
             id: "test-job-5".to_string(),
             crf: 18,
             scales: Scales::from_vec(Vec::new()),
+            codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),
         };
 
@@ -644,6 +777,7 @@ mod tests {
 
         // Should not contain scales field when empty
         assert!(!json.contains("scales"));
+        assert!(!json.contains("codecs"));
         assert!(json.contains(r#""id":"test-job-5""#));
         assert!(json.contains(r#""crf":18"#));
     }
@@ -660,6 +794,7 @@ mod tests {
             id: "test-job-6".to_string(),
             crf: 22,
             scales: Scales::from_vec(custom_scales),
+            codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),
         };
 
@@ -667,6 +802,7 @@ mod tests {
 
         // Should contain scales field when using custom values
         assert!(json.contains("scales"));
+        assert!(!json.contains("codecs"));
         assert!(json.contains(r#""id":"test-job-6""#));
         assert!(json.contains(r#""crf":22"#));
         assert!(json.contains(r#""w":1920"#));
@@ -682,6 +818,7 @@ mod tests {
             id: "round-trip-1".to_string(),
             crf: 24,
             scales: Scales::new(),
+            codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),
         };
 
@@ -703,6 +840,7 @@ mod tests {
             id: "round-trip-2".to_string(),
             crf: 26,
             scales: Scales::from_vec(custom_scales.clone()),
+            codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),
         };
 
@@ -729,6 +867,7 @@ mod tests {
         assert_eq!(job.id(), "constructor-test");
         assert_eq!(job.crf(), 28);
         assert_eq!(job.scales.len(), scales.len());
+        assert_eq!(&*job.codecs, &DEFAULT_CODECS);
     }
 
     #[test]
@@ -739,6 +878,7 @@ mod tests {
         let old_json = r#"{"id":"old-job","crf":23}"#;
         let old_job: ConvertJob = serde_json::from_str(old_json).unwrap();
         assert_eq!(&*old_job.scales, &RESOLUTIONS);
+        assert_eq!(&*old_job.codecs, &DEFAULT_CODECS);
 
         // 2. Job with null scales should work (fallback to default)
         let null_json = r#"{"id":"null-job","crf":25,"scales":null}"#;
@@ -749,5 +889,30 @@ mod tests {
         let minimal_json = r#"{"id":"minimal","crf":20,"scales":[]}"#;
         let minimal_job: ConvertJob = serde_json::from_str(minimal_json).unwrap();
         assert_eq!(&*minimal_job.scales, &RESOLUTIONS); // Empty scales should deref to default
+        assert_eq!(&*minimal_job.codecs, &DEFAULT_CODECS);
+    }
+
+    #[test]
+    fn test_convert_job_only_h265_serialization() {
+        let mut job = ConvertJob::new("h265-only".to_string(), 30, Scales::new());
+        job.codecs = ConvertCodecs::from_vec(vec![ConvertCodec::H265]);
+
+        let json = serde_json::to_string(&job).unwrap();
+        assert!(json.contains("codecs"));
+        assert!(json.contains("h265"));
+
+        let parsed: ConvertJob = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.codecs.len(), 1);
+        assert_eq!(parsed.codecs[0], ConvertCodec::H265);
+    }
+
+    #[test]
+    fn test_convert_job_deserialize_with_codecs() {
+        let json = r#"{"id":"custom","crf":28,"codecs":["h265","vp9"]}"#;
+        let job: ConvertJob = serde_json::from_str(json).unwrap();
+
+        assert_eq!(job.codecs.len(), 2);
+        assert_eq!(job.codecs[0], ConvertCodec::H265);
+        assert_eq!(job.codecs[1], ConvertCodec::Vp9);
     }
 }
