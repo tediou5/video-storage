@@ -146,7 +146,7 @@ impl ConvertCodec {
     fn video_encoder(self) -> &'static str {
         match self {
             ConvertCodec::Vp9 => "libvpx-vp9",
-            ConvertCodec::H265 => "hevc",
+            ConvertCodec::H265 => "libx265",
         }
     }
 
