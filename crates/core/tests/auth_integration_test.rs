@@ -272,9 +272,7 @@ async fn test_h265_paths_strip_codec_suffix() {
         "/videos/720/test_video-h265-init.mp4",
         "/videos/720/test_video-h265-001.m4s",
     ] {
-        let response = server
-            .get_with_auth(&client, path, &token)
-            .await;
+        let response = server.get_with_auth(&client, path, &token).await;
         assert_eq!(response.status(), 404, "expected 404 for {}", path);
     }
 }
