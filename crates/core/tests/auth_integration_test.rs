@@ -257,6 +257,27 @@ async fn test_width_restrictions_with_segments() {
 }
 
 #[tokio::test]
+async fn test_h265_paths_strip_codec_suffix() {
+    let server = TestServer::shared().await;
+    let client = server.client();
+
+    let token = server
+        .create_claim(&client, "test_video", vec![720], 3600)
+        .await
+        .expect("Failed to create claim");
+
+    for path in [
+        "/videos/test_video-h265.m3u8",
+        "/videos/720/test_video-h265.m3u8",
+        "/videos/720/test_video-h265-init.mp4",
+        "/videos/720/test_video-h265-001.m4s",
+    ] {
+        let response = server.get_with_auth(&client, path, &token).await;
+        assert_eq!(response.status(), 404, "expected 404 for {}", path);
+    }
+}
+
+#[tokio::test]
 async fn test_multiple_width_restrictions() {
     let server = TestServer::shared().await;
     let client = server.client();
