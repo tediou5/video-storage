@@ -89,6 +89,12 @@ pub async fn claim_auth_middleware(
     next.run(req).await
 }
 
+/// Remove codec suffix from asset_id if present
+fn remove_codec_suffix(asset_id: &str) -> &str {
+    // Remove h265 codec suffix
+    asset_id.strip_suffix("-h265").unwrap_or(asset_id)
+}
+
 /// Parse video filename to extract asset_id and optional segment index
 /// Supports formats:
 /// - {asset_id}.m3u8 (master playlist)
@@ -110,13 +116,15 @@ fn parse_video_filename(filename: &str) -> Option<(String, Option<u32>, Option<u
 
     // Check for master playlist
     if file_part.ends_with(".m3u8") {
-        let asset_id = file_part.trim_end_matches(".m3u8");
+        let asset_id_with_suffix = file_part.trim_end_matches(".m3u8");
+        let asset_id = remove_codec_suffix(asset_id_with_suffix);
         return Some((asset_id.to_string(), None, width));
     }
 
     // Check for init segment
     if file_part.ends_with("-init.mp4") {
-        let asset_id = file_part.trim_end_matches("-init.mp4");
+        let asset_id_with_suffix = file_part.trim_end_matches("-init.mp4");
+        let asset_id = remove_codec_suffix(asset_id_with_suffix);
         return Some((asset_id.to_string(), Some(0), width)); // Init segment gets index 0
     }
 
@@ -126,9 +134,10 @@ fn parse_video_filename(filename: &str) -> Option<(String, Option<u32>, Option<u
         let parts: Vec<&str> = without_ext.rsplitn(2, '-').collect();
 
         if parts.len() == 2 {
-            // parts[0] is segment number (reversed), parts[1] is asset_id
+            // parts[0] is segment number (reversed), parts[1] is asset_id_with_suffix
             if let Ok(segment_num) = parts[0].parse::<u32>() {
-                return Some((parts[1].to_string(), Some(segment_num), width));
+                let asset_id = remove_codec_suffix(parts[1]);
+                return Some((asset_id.to_string(), Some(segment_num), width));
             }
         }
     }
@@ -162,6 +171,30 @@ mod tests {
 
         // Video segment
         let (asset_id, seg, width) = parse_video_filename("720/video123-005.m4s").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, Some(5));
+        assert_eq!(width, Some(720));
+
+        // H265 master playlist
+        let (asset_id, seg, width) = parse_video_filename("video123-h265.m3u8").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, None);
+        assert_eq!(width, None);
+
+        // H265 resolution playlist
+        let (asset_id, seg, width) = parse_video_filename("720/video123-h265.m3u8").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, None);
+        assert_eq!(width, Some(720));
+
+        // H265 init segment
+        let (asset_id, seg, width) = parse_video_filename("720/video123-h265-init.mp4").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, Some(0));
+        assert_eq!(width, Some(720));
+
+        // H265 video segment
+        let (asset_id, seg, width) = parse_video_filename("720/video123-h265-005.m4s").unwrap();
         assert_eq!(asset_id, "video123");
         assert_eq!(seg, Some(5));
         assert_eq!(width, Some(720));
