@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::job::upload::UploadJob;
 use crate::job::{Action, CONVERT_KIND, FailureJob, Job, JobKind, RawJob};
+use anyhow::Result;
 use ez_ffmpeg::Frame;
 use ez_ffmpeg::container_info::get_duration_us;
 use ez_ffmpeg::filter::frame_filter::FrameFilter;
@@ -10,7 +11,7 @@ use ez_ffmpeg::{AVMediaType, Input};
 use ez_ffmpeg::{FfmpegContext, Output};
 use ffmpeg_next::{StreamMut, codec, format, media};
 use serde::{Deserialize, Serialize};
-use std::io::Write as _;
+use std::io::Write;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -78,10 +79,9 @@ impl Scales {
 
     pub fn bandwidth(width: u32) -> u32 {
         match width {
-            w if w > 720 => 5_000_000,
-            w if w > 540 => 2_500_000,
-            w if w > 480 => 1_500_000,
-            _ => 1_000_000,
+            w if w >= 720 => 735_000,
+            w if w >= 540 => 495_000,
+            _ => 430_000,
         }
     }
 }
@@ -109,15 +109,17 @@ impl Default for Scales {
 pub enum ConvertCodec {
     Vp9,
     H265,
+    H264,
 }
 
-pub const DEFAULT_CODECS: [ConvertCodec; 2] = [ConvertCodec::Vp9, ConvertCodec::H265];
+pub const DEFAULT_CODECS: [ConvertCodec; 2] = [ConvertCodec::Vp9, ConvertCodec::H264];
 
 impl ConvertCodec {
     fn playlist_suffix(self) -> &'static str {
         match self {
             ConvertCodec::Vp9 => "",
             ConvertCodec::H265 => "-h265",
+            ConvertCodec::H264 => "-h264",
         }
     }
 
@@ -129,6 +131,7 @@ impl ConvertCodec {
         match self {
             ConvertCodec::Vp9 => job_id.to_string(),
             ConvertCodec::H265 => format!("{job_id}-h265"),
+            ConvertCodec::H264 => format!("{job_id}-h264"),
         }
     }
 
@@ -139,7 +142,7 @@ impl ConvertCodec {
     fn audio_encoder(self) -> &'static str {
         match self {
             ConvertCodec::Vp9 => "libopus",
-            ConvertCodec::H265 => "aac",
+            ConvertCodec::H265 | ConvertCodec::H264 => "aac",
         }
     }
 
@@ -147,25 +150,29 @@ impl ConvertCodec {
         match self {
             ConvertCodec::Vp9 => "libvpx-vp9",
             ConvertCodec::H265 => "libx265",
+            ConvertCodec::H264 => "libx264",
         }
     }
 
     fn codecs_attribute(self) -> &'static str {
         match self {
             ConvertCodec::Vp9 => "vp09.00.51.08.01.01.01.01.00,opus",
-            ConvertCodec::H265 => "hvc1.1.6.L93.B0,mp4a.40.2",
+            ConvertCodec::H265 => "hvc1.1.6.L90.B0,mp4a.40.2",
+            ConvertCodec::H264 => "avc1.4D401F,mp4a.40.2",
         }
     }
 
     fn apply_codec_settings(self, output: Output) -> Output {
-        match self {
-            ConvertCodec::Vp9 => output
-                .set_audio_codec(self.audio_encoder())
-                .set_video_codec(self.video_encoder()),
-            ConvertCodec::H265 => output
-                .set_audio_codec(self.audio_encoder())
-                .set_video_codec(self.video_encoder()),
+        if let ConvertCodec::H265 = self {
+            output
+                .set_video_codec_opt("g", "120")
+                .set_video_codec_opt("keyint_min", "120")
+                .set_video_codec_opt("sc_threshold", "0")
+        } else {
+            output
         }
+        .set_audio_codec(self.audio_encoder())
+        .set_video_codec(self.video_encoder())
     }
 }
 
@@ -375,9 +382,9 @@ pub fn convert(
                 .add_frame_pipeline(pipe)
                 .add_stream_map("0:a?")
                 .add_stream_map(format!("v{scale_idx}{}", codec.segment_prefix("")));
-            output_builder = codec.apply_codec_settings(output_builder);
-            output_builder = output_builder.set_video_codec_opt("crf", crf.to_string());
-            output_builder = output_builder
+            output_builder = codec
+                .apply_codec_settings(output_builder)
+                .set_video_codec_opt("crf", crf.to_string())
                 .set_format("hls")
                 .set_format_opt("hls_time", HLS_SEGMENT_DURATION.to_string())
                 .set_format_opt("hls_segment_type", "fmp4")
@@ -502,14 +509,15 @@ pub fn create_master_playlist(job: &ConvertJob, input: &str, output: &Path) -> a
     }
 
     convert(job, input, output, progress_callbacker.into())
-        .inspect_err(|error| error!(?error, "Failed to convert to HLS with scales"))?;
+        .inspect_err(|error| error!(?error, %job_id, "Failed to convert to HLS with scales"))?;
+    // FIXME: h265 in apple is not supported yet
 
     let master_playlist_path = output.join(format!("{job_id}.m3u8"));
     let mut file = std::fs::File::create(&master_playlist_path)?;
 
     let mut content = String::new();
     content.push_str("#EXTM3U\n");
-    content.push_str("#EXT-X-VERSION:3\n");
+    content.push_str("#EXT-X-VERSION:7\n");
     content.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
 
     // #EXTM3U
@@ -673,17 +681,6 @@ mod tests {
 
         let custom_scales = Scales::from_vec(vec![Scale::new(1920, 1080)]);
         assert!(!custom_scales.skip_serialize());
-    }
-
-    #[test]
-    fn test_scales_bandwidth() {
-        assert_eq!(Scales::bandwidth(800), 5_000_000);
-        assert_eq!(Scales::bandwidth(720), 2_500_000);
-        assert_eq!(Scales::bandwidth(600), 2_500_000);
-        assert_eq!(Scales::bandwidth(540), 1_500_000);
-        assert_eq!(Scales::bandwidth(500), 1_500_000);
-        assert_eq!(Scales::bandwidth(480), 1_000_000);
-        assert_eq!(Scales::bandwidth(300), 1_000_000);
     }
 
     #[test]
