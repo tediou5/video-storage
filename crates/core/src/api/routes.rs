@@ -2,16 +2,16 @@ use crate::job::{CONVERT_KIND, UPLOAD_KIND};
 use crate::{AppState, ConvertJob, Job};
 use axum::body::Body;
 use axum::extract::{Extension, Path as AxumPath};
-use axum::http::{Request, Response, StatusCode, header};
+use axum::http::{HeaderValue, Request, Response, StatusCode, header};
 use axum::response::{IntoResponse, Json};
 use bytes::Bytes;
 use futures::StreamExt;
-use mime_guess::from_path;
 use opendal::Operator;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
+use std::ffi::OsStr;
 use std::io::Error as IoError;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncSeekExt;
 use tokio_util::io::ReaderStream;
@@ -346,19 +346,9 @@ async fn server_file_with_bucket(
     };
     *res.status_mut() = status;
     let headers = res.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        from_path(&filename)
-            .first_or_octet_stream()
-            .to_string()
-            .parse()
-            .unwrap(),
-    );
+    headers.insert(header::CONTENT_TYPE, hls_content_type(Path::new(&filename)));
     headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
-    headers.insert(
-        header::CACHE_CONTROL,
-        "public,max-age=3600".parse().unwrap(),
-    );
+    headers.insert(header::CACHE_CONTROL, "no-transform".parse().unwrap());
     headers.insert(header::CONTENT_LENGTH, len.to_string().parse().unwrap());
     if status == StatusCode::PARTIAL_CONTENT {
         headers.insert(
@@ -449,6 +439,23 @@ pub(crate) fn err_response(status: StatusCode, body_str: &'static str) -> Respon
         .status(status)
         .body(Body::from(body_str))
         .unwrap()
+}
+
+fn hls_content_type(path: &Path) -> HeaderValue {
+    HeaderValue::from_static(
+        match path
+            .extension()
+            .and_then(OsStr::to_str)
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default()
+            .as_str()
+        {
+            "m3u8" => "application/vnd.apple.mpegurl",
+            "m4s" => "video/iso.segment",
+            "mp4" => "video/mp4",
+            _ => "application/octet-stream",
+        },
+    )
 }
 
 #[cfg(test)]

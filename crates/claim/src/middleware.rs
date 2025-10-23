@@ -91,8 +91,11 @@ pub async fn claim_auth_middleware(
 
 /// Remove codec suffix from asset_id if present
 fn remove_codec_suffix(asset_id: &str) -> &str {
-    // Remove h265 codec suffix
-    asset_id.strip_suffix("-h265").unwrap_or(asset_id)
+    // Remove codec suffix
+    asset_id
+        .strip_suffix("-h265")
+        .or_else(|| asset_id.strip_suffix("-h264"))
+        .unwrap_or(asset_id)
 }
 
 /// Parse video filename to extract asset_id and optional segment index
