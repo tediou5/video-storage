@@ -29,6 +29,7 @@ pub struct AppState {
     pub jobs_manager: JobSetManager,
     pub claim_manager: ClaimManager,
     pub storage_manager: Arc<StorageManager>,
+    pub permits: usize,
 
     pub temp_dir: PathBuf,
     pub videos_dir: PathBuf,
@@ -58,6 +59,7 @@ impl AppState {
             jobs_manager,
             claim_manager,
             storage_manager: Arc::new(storage_manager),
+            permits,
 
             temp_dir: workspace.join(TEMP_DIR),
             uploads_dir: workspace.join(UPLOADS_DIR),

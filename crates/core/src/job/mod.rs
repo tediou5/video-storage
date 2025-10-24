@@ -79,8 +79,9 @@ pub trait Job: Clone + Sized + Send + Sync + 'static {
 
             let needed_permits = self.need_permit();
             let _permit = if needed_permits > 0 {
-                let needed_permits =
-                    u32::try_from(needed_permits).expect("permit count must fit in u32");
+                // One for upload-job
+                let needed_permits = u32::try_from(needed_permits.min(state.permits - 1))
+                    .expect("permit count must fit in u32");
                 Some(semaphore.acquire_many(needed_permits).await.unwrap())
             } else {
                 None
