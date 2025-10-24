@@ -192,7 +192,8 @@ Example config.toml:
 # Server configuration
 listen_on_port = 32145
 internal_port = 32146
-permits = 5
+permits = 10
+# Minimum permits is 10 to accommodate codec/scale concurrency and uploads
 token_rate = 0.0
 workspace = "./data"
 

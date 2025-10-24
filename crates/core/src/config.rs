@@ -14,7 +14,7 @@ use std::path::Path;
 /// # Server configuration
 /// listen_on_port = 32145
 /// internal_port = 32146
-/// permits = 5
+/// permits = 10
 /// token_rate = 0.0
 /// workspace = "./data"
 ///
@@ -45,7 +45,7 @@ pub struct Config {
     pub internal_port: u16,
 
     /// Number of concurrent conversion jobs
-    #[arg(short, long, default_value_t = 5)]
+    #[arg(short, long, default_value_t = MIN_PERMITS)]
     #[serde(default = "default_permits")]
     pub permits: usize,
 
@@ -195,6 +195,12 @@ impl Default for Config {
 }
 
 impl Config {
+    fn enforce_permit_floor(&mut self) {
+        if self.permits < MIN_PERMITS {
+            self.permits = MIN_PERMITS;
+        }
+    }
+
     /// Load configuration from CLI args, optionally merging with a config file
     pub fn load() -> anyhow::Result<Self> {
         // First parse CLI args
@@ -206,6 +212,7 @@ impl Config {
             config = config.merge_with_file(file_config);
         }
 
+        config.enforce_permit_floor();
         config.validate()?;
         Ok(config)
     }
@@ -213,7 +220,8 @@ impl Config {
     /// Load configuration from a TOML file
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+        config.enforce_permit_floor();
         Ok(config)
     }
 
@@ -264,6 +272,7 @@ impl Config {
             self.claim_keys = file_config.claim_keys;
         }
 
+        self.enforce_permit_floor();
         self
     }
 
@@ -367,8 +376,10 @@ fn default_port() -> u16 {
     32145
 }
 
+const MIN_PERMITS: usize = 10;
+
 fn default_permits() -> usize {
-    5
+    MIN_PERMITS
 }
 
 fn default_token_rate() -> f64 {
@@ -390,6 +401,8 @@ fn default_internal_port() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_args_with_claim_keys_from_cli() {
@@ -522,5 +535,15 @@ mod tests {
     fn test_config_default_has_no_claim_keys() {
         let config = Config::default();
         assert!(config.claim_keys.is_empty());
+    }
+
+    #[test]
+    fn test_config_from_file_enforces_min_permits() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "permits = 3").unwrap();
+
+        let config = Config::from_file(file.path()).unwrap();
+
+        assert_eq!(config.permits, MIN_PERMITS);
     }
 }

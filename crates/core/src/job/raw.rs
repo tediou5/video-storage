@@ -108,7 +108,7 @@ pub struct RawJob {
     vtable: &'static VTable,
 
     kind: JobKind,
-    need_permit: bool,
+    need_permit: usize,
 }
 
 unsafe impl Send for RawJob {}
@@ -156,7 +156,7 @@ impl Job for RawJob {
         self.kind
     }
 
-    fn need_permit(&self) -> bool {
+    fn need_permit(&self) -> usize {
         self.need_permit
     }
 
