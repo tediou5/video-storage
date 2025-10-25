@@ -31,6 +31,10 @@ impl Job for UploadJob {
         UPLOAD_KIND
     }
 
+    fn need_permit(&self) -> usize {
+        1
+    }
+
     fn id(&self) -> &str {
         &self.id
     }

@@ -260,8 +260,8 @@ impl Job for ConvertJob {
         CONVERT_KIND
     }
 
-    fn need_permit(&self) -> bool {
-        true
+    fn need_permit(&self) -> usize {
+        self.codecs.len().saturating_mul(self.scales.len())
     }
 
     fn id(&self) -> &str {

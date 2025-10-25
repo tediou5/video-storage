@@ -4,7 +4,7 @@ pub mod raw;
 pub mod upload;
 
 use crate::app_state::AppState;
-use std::{ops::Deref, sync::Arc, time::Duration};
+use std::{future::Future, ops::Deref, sync::Arc, time::Duration};
 use tokio::sync::Semaphore as TokioSemaphore;
 use tokio::task::JoinHandle as TokioJoinHandle;
 use tracing::{debug, error, info, warn};
@@ -48,8 +48,8 @@ impl<N: Job, R: Job> JobResult<N, R> {
 pub trait Job: Clone + Sized + Send + Sync + 'static {
     fn kind(&self) -> JobKind;
 
-    fn need_permit(&self) -> bool {
-        false
+    fn need_permit(&self) -> usize {
+        0
     }
 
     fn id(&self) -> &str;
@@ -77,8 +77,12 @@ pub trait Job: Clone + Sized + Send + Sync + 'static {
             let kind = job.kind();
             debug!(job_id, kind, "job wait for permit");
 
-            let _permit = if self.need_permit() {
-                Some(semaphore.acquire().await.unwrap())
+            let needed_permits = self.need_permit();
+            let _permit = if needed_permits > 0 {
+                // One for upload-job
+                let needed_permits = u32::try_from(needed_permits.min(state.permits - 1))
+                    .expect("permit count must fit in u32");
+                Some(semaphore.acquire_many(needed_permits).await.unwrap())
             } else {
                 None
             };
@@ -110,6 +114,10 @@ where
 {
     fn kind(&self) -> JobKind {
         self.deref().kind()
+    }
+
+    fn need_permit(&self) -> usize {
+        self.deref().need_permit()
     }
 
     fn id(&self) -> &str {
