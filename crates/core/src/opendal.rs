@@ -6,7 +6,7 @@ use opendal::{Operator, layers::RetryLayer};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio_util::compat::FuturesAsyncWriteCompatExt as _;
 use tracing::{error, info};
 
@@ -121,7 +121,12 @@ fn build_s3_operator(
     }
 
     Ok(Operator::new(builder)?
-        .layer(RetryLayer::new().with_max_times(3))
+        .layer(
+            RetryLayer::new()
+                .with_max_times(3)
+                .with_min_delay(Duration::from_secs(15))
+                .with_max_delay(Duration::from_secs(45)),
+        )
         .finish())
 }
 
