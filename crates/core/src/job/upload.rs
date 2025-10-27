@@ -56,7 +56,7 @@ impl Job for UploadJob {
     }
 
     fn wait_for_retry(&self) -> Option<Duration> {
-        Some(Duration::from_secs(5))
+        Some(Duration::from_secs(30))
     }
 
     fn on_final_failure(&self) -> FailureJob {
