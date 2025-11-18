@@ -800,9 +800,8 @@ dependencies = [
 
 [[package]]
 name = "ez-ffmpeg"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14bd5012dc1cfa37c17ce363e5d5ebf23534f77c9b8d12cd07c1b8e0b853b8d4"
+version = "0.5.6"
+source = "git+https://github.com/YeautyYE/ez-ffmpeg.git?rev=ca126b0e63ed044d93e63b5a025013b4cd752110#ca126b0e63ed044d93e63b5a025013b4cd752110"
 dependencies = [
  "core-foundation 0.10.1",
  "crossbeam",
