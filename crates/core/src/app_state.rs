@@ -1,6 +1,6 @@
 use crate::job::manager::JobSetManager;
 use crate::job::raw::RawJob;
-use crate::job::{Job, JobResult};
+use crate::job::{Job, JobResult, JobSemaphores};
 use crate::{StorageManager, StreamMap};
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
@@ -127,7 +127,10 @@ impl AppState {
     fn start_job_handler(&self, rx: UnboundedReceiver<RawJob>, permits: usize) {
         info!(permits, "Job handler started");
         let this = self.clone();
-        let semaphore = Arc::new(Semaphore::new(permits));
+        let semaphores = JobSemaphores::new(
+            Arc::new(Semaphore::new(permits)),
+            Arc::new(Semaphore::new(1)),
+        );
 
         tokio::spawn(async move {
             debug!("Job handler started with RawJob system");
@@ -150,9 +153,9 @@ impl AppState {
                         let job_id = job.id().to_string();
 
                         let this_c = this.clone();
-                        let semaphore_c = semaphore.clone();
+                        let semaphores_c = semaphores.clone();
                         let task = async move {
-                            job.gen_task(this_c, semaphore_c).await.into_raw()
+                            job.gen_task(this_c, semaphores_c).await.into_raw()
                         };
                         if !jobs.add_if_not_in_progress(job_id.clone(), Box::pin(task)) {
                             warn!("Job {job_id} already in-progress, skipping");
