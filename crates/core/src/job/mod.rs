@@ -101,7 +101,7 @@ pub trait Job: Clone + Sized + Send + Sync + 'static {
             let pool_limit = if kind == UPLOAD_KIND {
                 1
             } else {
-                state.permits - 1
+                state.permits
             };
             let _permit = if needed_permits > 0 {
                 let acquire = u32::try_from(needed_permits.min(pool_limit))

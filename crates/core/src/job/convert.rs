@@ -272,12 +272,19 @@ impl Job for ConvertJob {
         let job = self.clone();
         tokio::spawn(async move {
             let temp_dir = state.temp_dir().join(format!("tmp-{}", job.id()));
+            let sanitized_input = format!("/tmp/{}-sanitized.mp4", job.id());
             let out_dir = state.videos_dir().join(job.id());
+
+            // Remove existing directory
+            _ = std::fs::remove_file(&sanitized_input);
+            _ = std::fs::remove_dir_all(&temp_dir);
+            _ = std::fs::remove_dir_all(&out_dir);
+
+            _ = std::fs::File::create(&sanitized_input)?;
             tokio::fs::create_dir_all(&temp_dir).await?;
+
             tokio::task::spawn_blocking(move || {
                 let input_path = job.upload_path(&state);
-                let sanitized_input = format!("/tmp/{}-sanitized.mp4", job.id());
-                _ = std::fs::File::create(&sanitized_input)?;
 
                 if let Err(error) = remux_av_only(input_path.to_str().unwrap(), &sanitized_input) {
                     warn!(?error, "Remux failed, using original file for conversion");
@@ -286,8 +293,7 @@ impl Job for ConvertJob {
                 };
 
                 create_master_playlist(&job, &sanitized_input, &temp_dir)?;
-                // Remove existing directory if it exists
-                _ = std::fs::remove_dir_all(&out_dir);
+
                 _ = std::fs::remove_file(sanitized_input);
                 std::fs::rename(&temp_dir, &out_dir)?;
                 // Cleanup original file

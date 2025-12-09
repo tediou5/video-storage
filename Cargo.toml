@@ -24,7 +24,7 @@ ffmpeg-next = { version = "7.1.0", features = [
     "build-lib-x265",
     "build-license-gpl",
 ] }
-ez-ffmpeg = { git = "https://github.com/YeautyYE/ez-ffmpeg.git", rev = "ca126b0e63ed044d93e63b5a025013b4cd752110" }
+ez-ffmpeg = { version = "0.6.0" }
 futures = "0.3"
 mime_guess = "2"
 
