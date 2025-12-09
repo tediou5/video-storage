@@ -18,6 +18,25 @@ pub type JobKind = &'static str;
 pub const UPLOAD_KIND: JobKind = "upload";
 pub const CONVERT_KIND: JobKind = "convert";
 
+#[derive(Clone)]
+pub struct JobSemaphores {
+    convert: Arc<TokioSemaphore>,
+    upload: Arc<TokioSemaphore>,
+}
+
+impl JobSemaphores {
+    pub fn new(convert: Arc<TokioSemaphore>, upload: Arc<TokioSemaphore>) -> Self {
+        Self { convert, upload }
+    }
+
+    pub fn for_kind(&self, kind: JobKind) -> Arc<TokioSemaphore> {
+        match kind {
+            UPLOAD_KIND => self.upload.clone(),
+            _ => self.convert.clone(),
+        }
+    }
+}
+
 pub enum JobResult<N: Job, R: Job> {
     Done,
     Next(N),
@@ -69,7 +88,7 @@ pub trait Job: Clone + Sized + Send + Sync + 'static {
     fn gen_task(
         &self,
         state: AppState,
-        semaphore: Arc<TokioSemaphore>,
+        semaphores: JobSemaphores,
     ) -> impl Future<Output = JobResult<impl Job, impl Job>> + Send {
         async move {
             let job = self.clone();
@@ -78,11 +97,16 @@ pub trait Job: Clone + Sized + Send + Sync + 'static {
             debug!(job_id, kind, "job wait for permit");
 
             let needed_permits = self.need_permit();
+            let semaphore = semaphores.for_kind(kind);
+            let pool_limit = if kind == UPLOAD_KIND {
+                1
+            } else {
+                state.permits - 1
+            };
             let _permit = if needed_permits > 0 {
-                // One for upload-job
-                let needed_permits = u32::try_from(needed_permits.min(state.permits - 1))
+                let acquire = u32::try_from(needed_permits.min(pool_limit))
                     .expect("permit count must fit in u32");
-                Some(semaphore.acquire_many(needed_permits).await.unwrap())
+                Some(semaphore.acquire_many(acquire).await.unwrap())
             } else {
                 None
             };
