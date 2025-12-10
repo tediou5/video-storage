@@ -288,8 +288,9 @@ impl Job for ConvertJob {
 
             let job_id = job.id().to_string();
             let webhook_state = state.clone();
-            let rx = spawn_convert_job(job, state, temp_dir, sanitized_input, out_dir);
-            rx.await.map_err(|_| anyhow!("convert worker dropped"))??;
+            spawn_convert_job(job, state, temp_dir, sanitized_input, out_dir)
+                .await
+                .map_err(|_| anyhow!("convert worker dropped"))??;
 
             webhook_state
                 .call_webhook(&job_id, CONVERT_KIND, "completed")
@@ -344,11 +345,11 @@ fn spawn_convert_job(
     out_dir: PathBuf,
 ) -> oneshot::Receiver<anyhow::Result<()>> {
     let (tx, rx) = oneshot::channel();
-    let pool = convert_pool();
-    pool.spawn_fifo(move || {
+    convert_pool().spawn_fifo(move || {
         let result = run_blocking_convert(job, state, temp_dir, sanitized_input, out_dir);
         let _ = tx.send(result);
     });
+
     rx
 }
 
