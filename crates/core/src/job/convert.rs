@@ -498,7 +498,7 @@ pub fn create_master_playlist(job: &ConvertJob, input: &str, output: &Path) -> a
     let job_id = job.id();
 
     let total = get_duration_us(input).unwrap();
-    info!(%job_id, "Duration: {total} us");
+    debug!(%job_id, "Duration: {total} us");
 
     let mut progress_callbacker = ProgressCallBacker::new(job_id.to_string());
     progress_callbacker.total_duration = total;
@@ -508,7 +508,7 @@ pub fn create_master_playlist(job: &ConvertJob, input: &str, output: &Path) -> a
     if let Some(audio_info) = audio_info {
         if let ez_ffmpeg::stream_info::StreamInfo::Audio { time_base, .. } = audio_info {
             progress_callbacker.time_base = time_base;
-            info!(%job_id, "Audio time base: {}/{}", time_base.num, time_base.den);
+            debug!(%job_id, "Audio time base: {}/{}", time_base.num, time_base.den);
         }
     } else {
         warn!("Audio stream information not found");

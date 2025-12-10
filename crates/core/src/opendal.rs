@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::compat::FuturesAsyncWriteCompatExt as _;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 /// Storage configuration
 #[derive(Clone, Debug)]
@@ -71,15 +71,11 @@ impl StorageManager {
         match &self.operator {
             None => {
                 // For local storage, no upload needed
-                info!("Using local storage, skipping upload");
+                info!(?local_path, "Using local storage, skipping upload");
                 Ok(())
             }
             Some(operator) => {
-                info!(
-                    local_path = ?local_path,
-                    remote_prefix = %remote_prefix,
-                    "Starting directory upload to remote storage"
-                );
+                info!(?local_path, %remote_prefix, "Starting directory upload to remote storage");
 
                 upload_tree_streaming(
                     operator.clone(),
@@ -210,14 +206,10 @@ pub async fn upload_tree_streaming(
     let final_errors = error_count.load(Ordering::Relaxed);
 
     if final_errors > 0 {
-        error!(
-            success = final_success,
-            errors = final_errors,
-            "Upload completed with errors"
-        );
-        Err(anyhow!("Upload failed with {} errors", final_errors))
+        error!(final_success, final_errors, "Upload completed with errors");
+        Err(anyhow!("Upload failed with {final_errors} errors"))
     } else {
-        info!(success = final_success, "Upload completed successfully");
+        info!(final_success, "Upload completed successfully");
         Ok(())
     }
 }
@@ -247,7 +239,7 @@ async fn upload_one(op: &Operator, local_root: &Path, file: &Path, prefix: &str)
     w.shutdown().await?;
 
     let dur = started.elapsed();
-    info!(
+    debug!(
         %key,
         ?file,
         bytes_copied=copied,
