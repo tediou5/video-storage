@@ -78,6 +78,7 @@ video-storage/
 │   │   │   └── error.rs          # Claim error types
 │   │   └── Cargo.toml
 │   ├── xorf/                     # Binary fuse filters for efficient membership testing
+│   ├── ez-ffmpeg/                # Forked ffmpeg bindings for Rust
 │   ├── twox-hash/                # Fast non-cryptographic hash functions
 │   └── test-server/              # Test utilities crate
 ├── docs/                         # Project documentation

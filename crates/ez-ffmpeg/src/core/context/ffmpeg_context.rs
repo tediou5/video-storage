@@ -6,11 +6,11 @@ use crate::core::context::input::Input;
 use crate::core::context::input_filter::{InputFilter, IFILTER_FLAG_AUTOROTATE};
 use crate::core::context::muxer::Muxer;
 use crate::core::context::output::{Output, StreamMap};
-use crate::core::metadata::StreamSpecifier;
 use crate::core::context::output_filter::{
     OutputFilter, OFILTER_FLAG_AUDIO_24BIT, OFILTER_FLAG_AUTOSCALE, OFILTER_FLAG_DISABLE_CONVERT,
 };
 use crate::core::context::{frame_alloc, CodecContext};
+use crate::core::metadata::StreamSpecifier;
 use crate::core::scheduler::ffmpeg_scheduler;
 use crate::core::scheduler::ffmpeg_scheduler::{FfmpegScheduler, Initialization};
 #[cfg(not(feature = "docs-rs"))]
@@ -465,10 +465,7 @@ fn is_filter_output_linklabel(linklabel: &str) -> bool {
 /// Parse and expand stream map specifications
 /// This mimics FFmpeg's opt_map() behavior: parse once, expand immediately
 /// FFmpeg reference: ffmpeg_opt.c:478-596
-unsafe fn expand_stream_maps(
-    mux: &mut Muxer,
-    demuxs: &[Demuxer],
-) -> Result<()> {
+unsafe fn expand_stream_maps(mux: &mut Muxer, demuxs: &[Demuxer]) -> Result<()> {
     let stream_map_specs = std::mem::take(&mut mux.stream_map_specs);
 
     for spec in stream_map_specs {
@@ -502,8 +499,8 @@ unsafe fn expand_stream_maps(
 
             // Store pure linklabel (without brackets) for later matching in map_manual()
             mux.stream_maps.push(StreamMap {
-                file_index: 0,  // Not used for filter outputs
-                stream_index: 0,  // Not used for filter outputs
+                file_index: 0,   // Not used for filter outputs
+                stream_index: 0, // Not used for filter outputs
                 linklabel: Some(pure_linklabel.to_string()),
                 copy: spec.copy,
                 disabled: false,
@@ -539,7 +536,7 @@ unsafe fn expand_stream_maps(
         // FFmpeg reference: opt_map line 520 - parse stream specifier
         // FFmpeg reference: opt_map line 533 - handle '?' suffix for allow_unused
         let (spec_str, allow_unused) = if remainder.ends_with('?') {
-            (&remainder[..remainder.len()-1], true)
+            (&remainder[..remainder.len() - 1], true)
         } else {
             (remainder, false)
         };
@@ -565,8 +562,7 @@ unsafe fn expand_stream_maps(
         if is_negative {
             for existing_map in &mut mux.stream_maps {
                 // Only process file-based maps (not filter outputs)
-                if existing_map.linklabel.is_none() &&
-                   existing_map.file_index == file_idx {
+                if existing_map.linklabel.is_none() && existing_map.file_index == file_idx {
                     // Check if stream specifier matches
                     let demux = &demuxs[file_idx];
                     let fmt_ctx = demux.in_fmt_ctx;
@@ -606,10 +602,7 @@ unsafe fn expand_stream_maps(
         if matched_count == 0 {
             if allow_unused {
                 // FFmpeg line 579: verbose log for optional mappings
-                info!(
-                    "Stream map '{}' matches no streams; ignoring.",
-                    linklabel
-                );
+                info!("Stream map '{}' matches no streams; ignoring.", linklabel);
             } else {
                 // FFmpeg line 586-587: fatal error with hint about '?' suffix
                 warn!(
@@ -617,9 +610,9 @@ unsafe fn expand_stream_maps(
                      To ignore this, add a trailing '?' to the map.",
                     linklabel
                 );
-                return Err(Error::OpenOutput(
-                    OpenOutputError::MatchesNoStreams(linklabel.to_string())
-                ));
+                return Err(Error::OpenOutput(OpenOutputError::MatchesNoStreams(
+                    linklabel.to_string(),
+                )));
             }
         }
     }
@@ -731,12 +724,17 @@ fn map_manual(
     let demux_node = demux.node.clone();
     let (media_type, input_stream_duration, input_stream_time_base) = {
         let input_stream = demux.get_stream_mut(stream_index);
-        (input_stream.codec_type, input_stream.duration, input_stream.time_base)
+        (
+            input_stream.codec_type,
+            input_stream.duration,
+            input_stream.time_base,
+        )
     };
 
     info!(
         "Binding output stream to input {}:{} ({})",
-        demux_idx, stream_index,
+        demux_idx,
+        stream_index,
         match media_type {
             AVMEDIA_TYPE_VIDEO => "video",
             AVMEDIA_TYPE_AUDIO => "audio",
@@ -2414,9 +2412,8 @@ fn fg_find_input_idx_by_linklabel(
     };
 
     // Parse file index using strtol (FFmpeg reference: ffmpeg_opt.c:512)
-    let (file_idx, remainder) = strtol(new_linklabel).map_err(|_| {
-        FilterGraphParseError::InvalidArgument
-    })?;
+    let (file_idx, remainder) =
+        strtol(new_linklabel).map_err(|_| FilterGraphParseError::InvalidArgument)?;
 
     if file_idx < 0 || file_idx as usize >= demuxs.len() {
         return Err(InvalidFileIndexInFg(file_idx as usize, desc.to_string()).into());
@@ -2441,7 +2438,10 @@ fn fg_find_input_idx_by_linklabel(
     } else {
         // Parse the specifier
         StreamSpecifier::parse(spec_str).map_err(|e| {
-            warn!("Invalid stream specifier in filter linklabel '{}': {}", linklabel, e);
+            warn!(
+                "Invalid stream specifier in filter linklabel '{}': {}",
+                linklabel, e
+            );
             FilterGraphParseError::InvalidArgument
         })?
     };

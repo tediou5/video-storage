@@ -19,9 +19,9 @@ license = "MIT OR Apache-2.0 OR MPL-2.0"
 repository = "https://github.com/YeautyYE/ez-ffmpeg"
 
 [dependencies]
-log = "0.4"
-thiserror = "1.0"
-ffmpeg-next = "7.1.0"
+log.workspace = true
+thiserror.workspace = true
+ffmpeg-next.workspace = true
 ffmpeg-sys-next = "7.1.0"
 crossbeam = "0.8.4"
 crossbeam-channel = "0.5.13"
@@ -33,7 +33,7 @@ glow = { version = "0.16", optional = true }
 bytemuck = { version = "1.8", optional = true }
 
 #flv
-bytes = { version = "1.9.0", optional = true }
+bytes = { workspace = true, optional = true }
 
 #rtmp
 rml_rtmp = { version = "0.8", optional = true }
@@ -59,4 +59,4 @@ features = ["docs-rs"]
 
 [dev-dependencies]
 env_logger = "0.10"
-tokio = { version = "1", features = ["full"] }
+tokio.workspace = true

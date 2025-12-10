@@ -1354,7 +1354,6 @@ impl Output {
         self
     }
 
-
     /// Disable automatic metadata copying from input files.
     ///
     /// By default, FFmpeg automatically copies global and stream metadata
@@ -1545,8 +1544,6 @@ impl Output {
 
         Ok(self)
     }
-
-
 }
 
 impl From<Box<dyn FnMut(&[u8]) -> i32>> for Output {
