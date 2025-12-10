@@ -1,0 +1,10 @@
+[package]
+name = "async"
+version = "0.1.0"
+edition = "2021"
+authors = ["Yeauty <YeautyYE@gmail.com>"]
+publish = false
+
+[dependencies]
+ez-ffmpeg = { path = "../../../ez-ffmpeg" , features = ["async"]}
+tokio = { version = "1", features = ["full"] }

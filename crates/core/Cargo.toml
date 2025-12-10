@@ -54,6 +54,7 @@ parking_lot.workspace = true
 
 # Local dependencies
 video-storage-claim = { path = "../claim" }
+ez-ffmpeg = { path = "../ez-ffmpeg" }
 xorf = { path = "../xorf" }
 
 [dev-dependencies]
