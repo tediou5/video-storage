@@ -52,6 +52,7 @@ toml = "0.8"
 reqwest = { version = "0.12", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2.5.0"
+rayon = "1.11"
 
 # Storage and crypto
 opendal = { version = "0.54", features = ["services-s3", "services-fs", "layers-mime-guess"] }

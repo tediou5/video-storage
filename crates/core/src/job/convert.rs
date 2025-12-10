@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::job::upload::UploadJob;
 use crate::job::{Action, CONVERT_KIND, FailureJob, Job, JobKind, RawJob};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use ez_ffmpeg::Frame;
 use ez_ffmpeg::container_info::get_duration_us;
 use ez_ffmpeg::filter::frame_filter::FrameFilter;
@@ -10,13 +10,16 @@ use ez_ffmpeg::filter::frame_pipeline_builder::FramePipelineBuilder;
 use ez_ffmpeg::{AVMediaType, Input};
 use ez_ffmpeg::{FfmpegContext, Output};
 use ffmpeg_next::{StreamMut, codec, format, media};
+use rayon::ThreadPool;
+use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle as TokioJoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -283,32 +286,14 @@ impl Job for ConvertJob {
             _ = std::fs::File::create(&sanitized_input)?;
             tokio::fs::create_dir_all(&temp_dir).await?;
 
-            tokio::task::spawn_blocking(move || {
-                let input_path = job.upload_path(&state);
+            let job_id = job.id().to_string();
+            let webhook_state = state.clone();
+            let rx = spawn_convert_job(job, state, temp_dir, sanitized_input, out_dir);
+            rx.await.map_err(|_| anyhow!("convert worker dropped"))??;
 
-                if let Err(error) = remux_av_only(input_path.to_str().unwrap(), &sanitized_input) {
-                    warn!(?error, "Remux failed, using original file for conversion");
-                    _ = std::fs::remove_file(&sanitized_input);
-                    std::fs::rename(&input_path, &sanitized_input)?;
-                };
-
-                create_master_playlist(&job, &sanitized_input, &temp_dir)?;
-
-                _ = std::fs::remove_file(sanitized_input);
-                std::fs::rename(&temp_dir, &out_dir)?;
-                // Cleanup original file
-                _ = std::fs::remove_file(&input_path);
-                info!(job_id = job.id(), "HLS conversion completed successfully");
-
-                tokio::spawn(async move {
-                    state
-                        .call_webhook(job.id(), CONVERT_KIND, "completed")
-                        .await;
-                });
-
-                Ok::<(), anyhow::Error>(())
-            })
-            .await??;
+            webhook_state
+                .call_webhook(&job_id, CONVERT_KIND, "completed")
+                .await;
 
             Ok(())
         })
@@ -349,6 +334,58 @@ impl Job for ConvertJob {
             ],
         )
     }
+}
+
+fn spawn_convert_job(
+    job: ConvertJob,
+    state: AppState,
+    temp_dir: PathBuf,
+    sanitized_input: String,
+    out_dir: PathBuf,
+) -> oneshot::Receiver<anyhow::Result<()>> {
+    let (tx, rx) = oneshot::channel();
+    let pool = convert_pool();
+    pool.spawn_fifo(move || {
+        let result = run_blocking_convert(job, state, temp_dir, sanitized_input, out_dir);
+        let _ = tx.send(result);
+    });
+    rx
+}
+
+fn run_blocking_convert(
+    job: ConvertJob,
+    state: AppState,
+    temp_dir: PathBuf,
+    sanitized_input: String,
+    out_dir: PathBuf,
+) -> anyhow::Result<()> {
+    let input_path = job.upload_path(&state);
+
+    if let Err(error) = remux_av_only(input_path.to_str().unwrap(), &sanitized_input) {
+        warn!(?error, "Remux failed, using original file for conversion");
+        _ = std::fs::remove_file(&sanitized_input);
+        std::fs::rename(&input_path, &sanitized_input)?;
+    };
+
+    create_master_playlist(&job, &sanitized_input, &temp_dir)?;
+
+    _ = std::fs::remove_file(&sanitized_input);
+    std::fs::rename(&temp_dir, &out_dir)?;
+    // Cleanup original file
+    _ = std::fs::remove_file(&input_path);
+    info!(job_id = job.id(), "HLS conversion completed successfully");
+
+    Ok(())
+}
+
+fn convert_pool() -> &'static ThreadPool {
+    static CONVERT_POOL: OnceLock<ThreadPool> = OnceLock::new();
+    CONVERT_POOL.get_or_init(|| {
+        ThreadPoolBuilder::new()
+            .thread_name(|index| format!("convert-{index}"))
+            .build()
+            .expect("create convert worker pool")
+    })
 }
 
 /// Convert MP4 to requested codec variants (VP9, H265).

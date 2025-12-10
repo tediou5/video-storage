@@ -42,6 +42,7 @@ toml.workspace = true
 reqwest.workspace = true
 chrono.workspace = true
 walkdir.workspace = true
+rayon.workspace = true
 
 # Storage and crypto
 opendal.workspace = true
