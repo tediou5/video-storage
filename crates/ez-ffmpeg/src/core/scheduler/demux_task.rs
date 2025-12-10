@@ -568,7 +568,7 @@ unsafe fn ist_dts_update(
                 let mut fields = 2;
 
                 if !ds.codec_desc.is_null()
-                    && ((*ds.codec_desc).props != 0 & AV_CODEC_PROP_FIELDS)
+                    && (((*ds.codec_desc).props & AV_CODEC_PROP_FIELDS) != 0)
                     && !av_stream_get_parser(ist).is_null()
                 {
                     fields = 1 + (*av_stream_get_parser(ist)).repeat_pict;
