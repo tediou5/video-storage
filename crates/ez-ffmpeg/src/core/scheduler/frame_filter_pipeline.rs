@@ -259,7 +259,7 @@ fn run_pipeline(
     let mut src_finished_flag = false;
 
     loop {
-        if crate::core::scheduler::ffmpeg_scheduler::wait_until_not_paused(&scheduler_status)
+        if crate::core::scheduler::ffmpeg_scheduler::wait_until_not_paused(scheduler_status)
             == crate::core::scheduler::ffmpeg_scheduler::STATUS_END
         {
             info!("Receiver end command, finishing.");
@@ -291,7 +291,7 @@ fn run_pipeline(
                         }
                     };
 
-                    if frame_senders.len() == 0 {
+                    if frame_senders.is_empty() {
                         debug!("All frame sender finished, finishing.");
                         return Ok(());
                     }
@@ -333,7 +333,7 @@ fn run_pipeline(
             }
         }
 
-        if frame_senders.len() == 0 {
+        if frame_senders.is_empty() {
             debug!("All frame sender finished, finishing.");
             return Ok(());
         }
@@ -362,11 +362,12 @@ fn send_frame(
 
         let mut finished_senders = Vec::new();
         for (i, (sender, fg_input_index, finished_flag_list)) in frame_senders.iter().enumerate() {
-            if !finished_flag_list.is_empty() && *fg_input_index < finished_flag_list.len() {
-                if finished_flag_list[*fg_input_index].load(Ordering::Acquire) {
-                    finished_senders.push(i);
-                    continue;
-                }
+            if !finished_flag_list.is_empty()
+                && *fg_input_index < finished_flag_list.len()
+                && finished_flag_list[*fg_input_index].load(Ordering::Acquire)
+            {
+                finished_senders.push(i);
+                continue;
             }
             if i < frame_senders.len() - 1 {
                 let mut to_send = frame_pool.get()?;

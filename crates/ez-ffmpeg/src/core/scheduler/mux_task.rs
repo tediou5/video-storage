@@ -333,7 +333,7 @@ fn _mux_init(
                     if !packet_is_null(&packet_box.packet) && packet_data.is_copy {
                         ret = streamcopy_rescale(
                             packet_box.packet.as_mut_ptr(),
-                            &packet_data,
+                            packet_data,
                             &start_time_us,
                             &recording_time_us,
                             &mut started,
@@ -506,15 +506,14 @@ unsafe fn write_packet(
         st_rescale_delta_last_map,
         oformat_flags,
         st_last_dts_map,
-        &mut sq_packet_box,
+        sq_packet_box,
         out_fmt_ctx_box.fmt_ctx,
     );
 
     (*sq_packet_box.packet.as_mut_ptr()).stream_index =
         sq_packet_box.packet_data.output_stream_index;
-    let ret =
-        av_interleaved_write_frame(out_fmt_ctx_box.fmt_ctx, sq_packet_box.packet.as_mut_ptr());
-    ret
+
+    av_interleaved_write_frame(out_fmt_ctx_box.fmt_ctx, sq_packet_box.packet.as_mut_ptr())
 }
 
 unsafe fn mux_fixup_ts(
@@ -534,9 +533,7 @@ unsafe fn mux_fixup_ts(
             duration = (*packet_data.codecpar).frame_size;
         }
 
-        if !st_rescale_delta_last_map.contains_key(&stream_index) {
-            st_rescale_delta_last_map.insert(stream_index, 0);
-        }
+        st_rescale_delta_last_map.entry(stream_index).or_insert(0);
         let ts_rescale_delta_last = st_rescale_delta_last_map.get_mut(&stream_index).unwrap();
 
         (*pkt).dts = av_rescale_delta(
@@ -566,9 +563,9 @@ unsafe fn mux_fixup_ts(
     }
     (*pkt).time_base = (**(*out_fmt_ctx).streams.add(stream_index as usize)).time_base;
 
-    if !st_last_dts_map.contains_key(&stream_index) {
-        st_last_dts_map.insert(stream_index, AV_NOPTS_VALUE);
-    }
+    st_last_dts_map
+        .entry(stream_index)
+        .or_insert(AV_NOPTS_VALUE);
     let last_mux_dts = st_last_dts_map.get_mut(&stream_index).unwrap();
 
     if (oformat_flags & AVFMT_NOTIMESTAMPS) == 0 {

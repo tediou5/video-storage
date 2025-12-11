@@ -1456,7 +1456,7 @@ impl Output {
         } else {
             self.chapter_metadata
                 .entry(chapter_index)
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(key, value);
         }
         self
@@ -1492,7 +1492,7 @@ impl Output {
         } else {
             self.program_metadata
                 .entry(program_index)
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(key, value);
         }
         self

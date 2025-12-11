@@ -196,7 +196,6 @@ impl FfmpegScheduler<Initialization> {
             .muxs
             .iter()
             .flat_map(|mux| mux.mux_stream_nodes.clone())
-            .map(|mux_stream| mux_stream.clone())
             .collect::<Vec<_>>();
         let input_controller = InputController::new(demux_nodes, mux_stream_nodes);
         let input_controller = Arc::new(input_controller);

@@ -64,7 +64,7 @@ impl FramePipeline {
     pub(crate) fn init_filters(&mut self) -> Result<(), String> {
         for holder in &mut self.filters {
             let mut ctx = FrameFilterContext::new(&holder.name, &mut self.attribute_map);
-            holder.filter.init(&mut ctx)?;
+            holder.filter.init(&ctx)?;
         }
         Ok(())
     }
@@ -74,7 +74,7 @@ impl FramePipeline {
     pub(crate) fn uninit_filters(&mut self) {
         for holder in &mut self.filters {
             let mut ctx = FrameFilterContext::new(&holder.name, &mut self.attribute_map);
-            holder.filter.uninit(&mut ctx);
+            holder.filter.uninit(&ctx);
         }
     }
 
@@ -86,7 +86,7 @@ impl FramePipeline {
     ) -> Result<Option<ffmpeg_next::Frame>, String> {
         for holder in &mut self.filters {
             let mut ctx = FrameFilterContext::new(&holder.name, &mut self.attribute_map);
-            match holder.filter.filter_frame(frame, &mut ctx)? {
+            match holder.filter.filter_frame(frame, &ctx)? {
                 Some(f) => {
                     frame = f;
                 }
@@ -109,7 +109,7 @@ impl FramePipeline {
         assert!(index < self.filters.len());
         let holder = &mut self.filters[index];
         let mut ctx = FrameFilterContext::new(&holder.name, &mut self.attribute_map);
-        holder.filter.request_frame(&mut ctx)
+        holder.filter.request_frame(&ctx)
     }
 
     /// Passes the given `frame` through the filters starting at `start_index`.
@@ -146,7 +146,7 @@ impl FramePipeline {
             let mut ctx = FrameFilterContext::new(&holder.name, &mut self.attribute_map);
 
             // Call `filter_frame` on the filter. If `None`, discard the frame and stop.
-            match holder.filter.filter_frame(frame, &mut ctx)? {
+            match holder.filter.filter_frame(frame, &ctx)? {
                 Some(f) => {
                     frame = f; // Continue to the next filter
                 }
