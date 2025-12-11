@@ -138,12 +138,10 @@ pub enum Error {
 
 impl PartialEq for Error {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Error::EOF, Error::EOF) => true,
-            (Error::Exit, Error::Exit) => true,
-            (Error::Bug, Error::Bug) => true,
-            _ => false,
-        }
+        matches!(
+            (self, other),
+            (Error::EOF, Error::EOF) | (Error::Exit, Error::Exit) | (Error::Bug, Error::Bug)
+        )
     }
 }
 

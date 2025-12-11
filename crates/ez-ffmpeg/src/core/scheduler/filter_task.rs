@@ -408,8 +408,11 @@ impl OutputFilterParameter {
         fg_input_index: usize,
         finished_flag_list: Arc<[AtomicBool]>,
     ) -> Self {
-        let mut fpsconv_context = FPSConvContext::default();
-        fpsconv_context.framerate = opts.framerate;
+        let fpsconv_context = FPSConvContext {
+            framerate: opts.framerate,
+            ..Default::default()
+        };
+
         Self {
             media_type,
             dst,
@@ -452,6 +455,7 @@ unsafe fn fg_send_eof(
 }
 
 #[cfg(not(feature = "docs-rs"))]
+#[allow(clippy::too_many_arguments)]
 unsafe fn fg_send_eof(
     fg_index: usize,
     graph: *mut *mut AVFilterGraph,
@@ -555,6 +559,7 @@ unsafe fn fg_send_frame(
 }
 
 #[cfg(not(feature = "docs-rs"))]
+#[allow(clippy::too_many_arguments)]
 unsafe fn fg_send_frame(
     fg_index: usize,
     graph: *mut *mut AVFilterGraph,
@@ -645,8 +650,10 @@ unsafe fn fg_send_frame(
 
             if need_reinit & AUDIO_CHANGED != 0 {
                 let fmt_str = CString::new("audio parameters changed to %d Hz, \0").unwrap();
-                let sample_format_name =
-                    av_get_sample_fmt_name(std::mem::transmute((*frame).format));
+                let sample_format_name = av_get_sample_fmt_name(std::mem::transmute::<
+                    i32,
+                    AVSampleFormat,
+                >((*frame).format));
                 av_bprintf(&mut reason, fmt_str.as_ptr(), (*frame).sample_rate);
                 av_channel_layout_describe_bprint(&(*frame).ch_layout, &mut reason);
                 let comma_str = CString::new(", %s, \0").unwrap();
@@ -658,7 +665,8 @@ unsafe fn fg_send_frame(
             }
 
             if need_reinit & VIDEO_CHANGED != 0 {
-                let pixel_format_name = av_get_pix_fmt_name(std::mem::transmute((*frame).format));
+                let pixel_format_name =
+                    av_get_pix_fmt_name(std::mem::transmute::<i32, AVPixelFormat>((*frame).format));
                 let color_space_name = av_color_space_name((*frame).colorspace);
                 let color_range_name = av_color_range_name((*frame).color_range);
 
@@ -837,7 +845,8 @@ unsafe fn configure_filtergraph(
     /* limit the lists of allowed formats to the ones selected, to
      * make sure they stay the same if the filtergraph is reconfigured later */
     for ofp in &mut *ofps {
-        ofp.format = std::mem::transmute(av_buffersink_get_format(ofp.filter));
+        ofp.format =
+            std::mem::transmute::<i32, AVPixelFormat>(av_buffersink_get_format(ofp.filter));
         ofp.width = av_buffersink_get_w(ofp.filter);
         ofp.height = av_buffersink_get_h(ofp.filter);
         ofp.color_space = av_buffersink_get_colorspace(ofp.filter);
@@ -1525,7 +1534,7 @@ unsafe fn fg_output_frame(
                 },
             };
 
-            if let Err(_) = dst.send(frame_box) {
+            if dst.send(frame_box).is_err() {
                 if !ofp.eof {
                     ofp.eof = true;
                     fgp.nb_outputs_done += 1;
@@ -1583,7 +1592,7 @@ unsafe fn close_output(
         };
 
         (*frame.as_mut_ptr()).time_base = ofp.tb_out;
-        (*frame.as_mut_ptr()).format = std::mem::transmute(ofp.format);
+        (*frame.as_mut_ptr()).format = std::mem::transmute::<AVPixelFormat, i32>(ofp.format);
 
         (*frame.as_mut_ptr()).width = ofp.width;
         (*frame.as_mut_ptr()).height = ofp.height;
@@ -1623,7 +1632,7 @@ unsafe fn close_output(
                 },
             };
 
-            if let Err(_) = dst.send(frame_box) {
+            if dst.send(frame_box).is_err() {
                 return AVERROR(ffmpeg_sys_next::EOF);
             }
         }
@@ -1645,7 +1654,7 @@ unsafe fn close_output(
             },
         };
 
-        if let Err(_) = dst.send(frame_box) {
+        if dst.send(frame_box).is_err() {
             return AVERROR(ffmpeg_sys_next::EOF);
         }
     }
@@ -2357,7 +2366,8 @@ unsafe fn configure_input_audio_filter(
     };
 
     av_bprint_init(&mut args, 0, AV_BPRINT_SIZE_AUTOMATIC as u32);
-    let sample_fmt_name = av_get_sample_fmt_name(std::mem::transmute(ifp.format));
+    let sample_fmt_name =
+        av_get_sample_fmt_name(std::mem::transmute::<i32, AVSampleFormat>(ifp.format));
 
     {
         let fmt_str = CString::new("time_base=%d/%d:sample_rate=%d:sample_fmt=%s").unwrap();
@@ -2495,7 +2505,7 @@ unsafe fn configure_input_video_filter(
     }
 
     let mut last_filter = ifp.filter;
-    let desc = av_pix_fmt_desc_get(std::mem::transmute(ifp.format));
+    let desc = av_pix_fmt_desc_get(std::mem::transmute::<i32, AVPixelFormat>(ifp.format));
 
     /*if (ifp.opts.flags & IFILTER_FLAG_CROP) {
         char crop_buf[64];

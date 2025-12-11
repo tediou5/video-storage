@@ -19,7 +19,8 @@ pub fn create_null_output() -> Output {
     });
 
     // Write callback: discards data and updates position atomically
-    let write_callback: Box<dyn FnMut(&[u8]) -> i32> = {
+    type Callback = Box<dyn FnMut(&[u8]) -> i32>;
+    let write_callback: Callback = {
         let state = std::sync::Arc::clone(&null_state);
         Box::new(move |buf: &[u8]| -> i32 {
             let len = buf.len() as u64;

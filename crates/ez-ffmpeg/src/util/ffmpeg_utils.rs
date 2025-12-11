@@ -155,7 +155,7 @@ pub(crate) fn av_rescale_q_rnd(a: i64, bq: AVRational, cq: AVRational, rnd: u32)
 /// * `b` - Numerator
 /// * `c` - Denominator
 /// * `rnd` - Rounding mode as `u32`. The lower bits (0-5) specify the base rounding mode,
-///          and bit 8192 (`AV_ROUND_PASS_MINMAX`) passes `INT64_MIN/MAX` through unchanged.
+///   and bit 8192 (`AV_ROUND_PASS_MINMAX`) passes `INT64_MIN/MAX` through unchanged.
 ///
 /// # Returns
 /// Rescaled value, or `i64::MIN` on error

@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn mux_init(
     mux_idx: usize,
     mux: &mut Muxer,
@@ -149,6 +150,7 @@ pub(crate) fn ready_to_init_mux(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mux_task_start(
     mux_idx: usize,
     out_fmt_ctx: *mut AVFormatContext,
@@ -203,6 +205,7 @@ fn mux_task_start(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn _mux_init(
     mux_idx: usize,
     out_fmt_ctx: *mut AVFormatContext,

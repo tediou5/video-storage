@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 unsafe impl Send for Output {}
 
+type CallBack = Box<dyn FnMut(&[u8]) -> i32>;
 pub struct Output {
     /// The URL of the output destination.
     ///
@@ -47,7 +48,7 @@ pub struct Output {
     /// It is recommended to set the `format` field to the desired output format (e.g., `mp4`, `flv`, etc.)
     /// when using a custom `write_callback`. The `format` ensures that FFmpeg processes the output
     /// correctly for the specified format.
-    pub(crate) write_callback: Option<Box<dyn FnMut(&[u8]) -> i32>>,
+    pub(crate) write_callback: Option<CallBack>,
 
     /// A callback function for custom seeking within the output stream.
     ///

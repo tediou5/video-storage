@@ -15,7 +15,6 @@ use crate::util::ffmpeg_utils::{av_err2str, hashmap_to_avdictionary};
 use crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender};
 use ffmpeg_next::packet::Mut;
 use ffmpeg_next::{Frame, Packet};
-use ffmpeg_sys_next::av_mallocz;
 use ffmpeg_sys_next::AVCodecID::{
     AV_CODEC_ID_ASS, AV_CODEC_ID_CODEC2, AV_CODEC_ID_DVB_SUBTITLE, AV_CODEC_ID_MJPEG,
 };
@@ -46,6 +45,7 @@ use ffmpeg_sys_next::{
     AV_CODEC_FLAG_COPY_OPAQUE, AV_CODEC_FLAG_FRAME_DURATION, AV_FRAME_FLAG_INTERLACED,
     AV_FRAME_FLAG_TOP_FIELD_FIRST, AV_FRAME_SIDE_DATA_FLAG_UNIQUE,
 };
+use ffmpeg_sys_next::{av_mallocz, AVPixelFormat, AVSampleFormat};
 use log::{debug, error, info, trace, warn};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString};
@@ -79,6 +79,7 @@ pub(crate) fn enc_init(
 }
 
 #[cfg(not(feature = "docs-rs"))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn enc_init(
     mux_idx: usize,
     mut enc_stream: EncoderStream,
@@ -283,7 +284,7 @@ pub(crate) fn enc_init(
                             (*pkt).flags |= AV_PKT_FLAG_TRUSTED;
 
                             // Send flushed packet to mux (real data packet, not empty marker)
-                            if let Err(_) = send_to_mux(
+                            if send_to_mux(
                                 PacketBox {
                                     packet,
                                     packet_data: PacketData {
@@ -297,7 +298,9 @@ pub(crate) fn enc_init(
                                 &pkt_sender,
                                 &pre_pkt_sender,
                                 &mux_started,
-                            ) {
+                            )
+                            .is_err()
+                            {
                                 error!("send flushed packet failed, mux already finished");
                                 break;
                             }
@@ -378,7 +381,7 @@ fn receive_from(
             }
             Ok(frame_box)
         }
-        Err(e) if e == RecvTimeoutError::Disconnected => {
+        Err(RecvTimeoutError::Disconnected) => {
             debug!("Source[decoder/filtergraph/pipeline] thread exit.");
             Err(SyncFrame::Break)
         }
@@ -386,6 +389,7 @@ fn receive_from(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_audio_queue(
     frame_samples: i32,
     samples_queued: &mut i32,
@@ -446,6 +450,7 @@ fn process_audio_queue(
     Ok(None)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn receive_frame(
     opened: &mut bool,
     receiver: &Receiver<FrameBox>,
@@ -714,7 +719,7 @@ unsafe fn receive_samples(
             0,
             to_copy,
             (*dst.as_ptr()).ch_layout.nb_channels,
-            std::mem::transmute((*dst.as_ptr()).format),
+            std::mem::transmute::<i32, AVSampleFormat>((*dst.as_ptr()).format),
         );
 
         if to_copy < (*src.as_ptr()).nb_samples {
@@ -808,7 +813,7 @@ fn enc_open(
                 if (*frame).format == -1 {
                     return Err(OpenOutputError::UnknownFrameFormat.into());
                 }
-                (*enc_ctx).sample_fmt = std::mem::transmute((*frame).format);
+                (*enc_ctx).sample_fmt = std::mem::transmute::<i32, AVSampleFormat>((*frame).format);
                 (*enc_ctx).sample_rate = (*frame).sample_rate;
                 let ret = av_channel_layout_copy(&mut (*enc_ctx).ch_layout, &(*frame).ch_layout);
                 if ret < 0 {
@@ -843,7 +848,7 @@ fn enc_open(
                 if (*frame).format == -1 {
                     return Err(OpenEncoder(OpenEncoderOperationError::UnknownFrameFormat));
                 }
-                (*enc_ctx).pix_fmt = std::mem::transmute((*frame).format);
+                (*enc_ctx).pix_fmt = std::mem::transmute::<i32, AVPixelFormat>((*frame).format);
 
                 if let Some(bits_per_raw_sample) = bits_per_raw_sample {
                     (*enc_ctx).bits_per_raw_sample = bits_per_raw_sample;
@@ -1042,13 +1047,15 @@ unsafe fn hw_device_setup_for_encode(
 
 #[cfg(not(feature = "docs-rs"))]
 unsafe fn offset_audio(f: *mut AVFrame, nb_samples: i32) {
-    let planar = av_sample_fmt_is_planar(std::mem::transmute((*f).format));
+    use ffmpeg_sys_next::AVSampleFormat;
+
+    let planar = av_sample_fmt_is_planar(std::mem::transmute::<i32, AVSampleFormat>((*f).format));
     let planes = if planar != 0 {
         (*f).ch_layout.nb_channels
     } else {
         1
     };
-    let bps = av_get_bytes_per_sample(std::mem::transmute((*f).format));
+    let bps = av_get_bytes_per_sample(std::mem::transmute::<i32, AVSampleFormat>((*f).format));
     let offset = (nb_samples
         * bps
         * if planar != 0 {
@@ -1107,6 +1114,7 @@ unsafe fn frame_is_aligned(align_mask: usize, frame: *const AVFrame) -> bool {
 }
 
 #[cfg(not(feature = "docs-rs"))]
+#[allow(clippy::too_many_arguments)]
 fn frame_encode(
     enc_ctx: *mut AVCodecContext,
     frame: *mut AVFrame,
@@ -1181,6 +1189,7 @@ fn frame_encode(
 }
 
 #[cfg(not(feature = "docs-rs"))]
+#[allow(clippy::too_many_arguments)]
 unsafe fn do_subtitle_out(
     enc_ctx: *mut AVCodecContext,
     sub: *const AVSubtitle,
@@ -1283,7 +1292,7 @@ unsafe fn do_subtitle_out(
         }
         (*pkt).dts = (*pkt).pts;
 
-        if let Err(_) = send_to_mux(
+        if send_to_mux(
             PacketBox {
                 packet,
                 packet_data: PacketData {
@@ -1297,7 +1306,9 @@ unsafe fn do_subtitle_out(
             pkt_sender,
             pre_pkt_sender,
             mux_started,
-        ) {
+        )
+        .is_err()
+        {
             error!("send subtitle packet failed, mux already finished");
             return Err(Encoding(EncodingOperationError::MuxerFinished));
         }
@@ -1358,7 +1369,7 @@ unsafe fn encode_frame(
 
         (*pkt).flags |= AV_PKT_FLAG_TRUSTED;
 
-        if let Err(_) = send_to_mux(
+        if send_to_mux(
             PacketBox {
                 packet,
                 packet_data: PacketData {
@@ -1372,7 +1383,9 @@ unsafe fn encode_frame(
             pkt_sender,
             pre_pkt_sender,
             mux_started,
-        ) {
+        )
+        .is_err()
+        {
             error!("send packet failed, mux already finished");
             return Err(Encoding(EncodingOperationError::MuxerFinished));
         }
@@ -1384,18 +1397,18 @@ fn send_to_mux(
     pkt_sender: &Sender<PacketBox>,
     pre_pkt_sender: &Sender<PacketBox>,
     mux_started: &Arc<AtomicBool>,
-) -> Result<(), SendError<PacketBox>> {
+) -> Result<(), Box<SendError<PacketBox>>> {
     if mux_started.load(Ordering::Acquire) {
-        pkt_sender.send(packet_box)
+        pkt_sender.send(packet_box).map_err(Box::new)
     } else {
         if let Err(e) = pre_pkt_sender.send(packet_box) {
             for _ in 0..64 {
                 if mux_started.load(Ordering::Acquire) {
-                    return pkt_sender.send(e.0);
+                    return pkt_sender.send(e.0).map_err(Box::new);
                 }
                 sleep(Duration::from_millis(100));
             }
-            return Err(e);
+            return Err(Box::new(e));
         }
         Ok(())
     }

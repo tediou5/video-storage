@@ -2,7 +2,7 @@ use crate::core::context::decoder_stream::DecoderStream;
 use crate::core::context::encoder_stream::EncoderStream;
 use crate::core::context::obj_pool::ObjPool;
 use crate::core::context::{FrameBox, FrameData};
-use crate::core::scheduler::type_to_symbol;
+use crate::core::scheduler::{type_to_symbol, FrameSenders};
 use crate::error::Error::{
     FrameFilterInit, FrameFilterProcess, FrameFilterRequest, FrameFilterSendOOM,
     FrameFilterStreamTypeNoMatched, FrameFilterThreadExited, FrameFilterTypeNoMatched,
@@ -21,7 +21,7 @@ use std::time::Duration;
 pub(crate) fn input_pipeline_init(
     demux_idx: usize,
     pipeline: FramePipeline,
-    decoder_streams: &mut Vec<DecoderStream>,
+    decoder_streams: &mut [DecoderStream],
     frame_pool: ObjPool<Frame>,
     scheduler_status: Arc<AtomicUsize>,
     scheduler_result: Arc<Mutex<Option<crate::error::Result<()>>>>,
@@ -50,7 +50,7 @@ pub(crate) fn input_pipeline_init(
 pub(crate) fn output_pipeline_init(
     mux_idx: usize,
     pipeline: FramePipeline,
-    encoder_streams: &mut Vec<EncoderStream>,
+    encoder_streams: &mut [EncoderStream],
     frame_pool: ObjPool<Frame>,
     scheduler_status: Arc<AtomicUsize>,
     scheduler_result: Arc<Mutex<Option<crate::error::Result<()>>>>,
@@ -79,12 +79,8 @@ pub(crate) fn output_pipeline_init(
 
 fn match_decoder_stream(
     pipeline: &FramePipeline,
-    decoder_streams: &mut Vec<DecoderStream>,
-) -> crate::error::Result<(
-    usize,
-    Receiver<FrameBox>,
-    Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>,
-)> {
+    decoder_streams: &mut [DecoderStream],
+) -> crate::error::Result<(usize, Receiver<FrameBox>, FrameSenders)> {
     let (stream_index, pipeline_frame_receiver, decoder_frame_senders) = match pipeline.stream_index
     {
         Some(stream_index) => {
@@ -140,7 +136,7 @@ fn match_decoder_stream(
 
 fn match_encoder_stream(
     pipeline: &FramePipeline,
-    encoder_streams: &mut Vec<EncoderStream>,
+    encoder_streams: &mut [EncoderStream],
 ) -> crate::error::Result<(usize, Receiver<FrameBox>, Sender<FrameBox>)> {
     let (stream_index, encoder_frame_receiver, pipeline_frame_sender) = match pipeline.stream_index
     {
@@ -192,6 +188,7 @@ fn match_encoder_stream(
     Ok((stream_index, encoder_frame_receiver, pipeline_frame_sender))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pipeline_init(
     is_input: bool,
     demux_mux_idx: usize,
@@ -342,7 +339,7 @@ fn run_pipeline(
 
 fn send_frame(
     pipeline: &mut FramePipeline,
-    frame_senders: &mut Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>,
+    frame_senders: &mut FrameSenders,
     frame_pool: &ObjPool<Frame>,
     tmp_frame: Option<Frame>,
 ) -> crate::error::Result<()> {
@@ -394,7 +391,7 @@ fn send_frame(
                     frame: to_send,
                     frame_data,
                 };
-                if let Err(_) = sender.send(frame_box) {
+                if sender.send(frame_box).is_err() {
                     debug!(
                         "Pipeline [index:{}] send frame failed, destination already finished",
                         pipeline.stream_index.unwrap_or(usize::MAX),
@@ -404,7 +401,7 @@ fn send_frame(
                 }
             } else {
                 frame_box.frame_data.fg_input_index = *fg_input_index;
-                if let Err(_) = sender.send(frame_box) {
+                if sender.send(frame_box).is_err() {
                     debug!(
                         "Pipeline [index:{}] send frame failed, destination already finished",
                         pipeline.stream_index.unwrap_or(usize::MAX)

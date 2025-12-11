@@ -1073,16 +1073,16 @@ unsafe fn demux_stream_send_to_dst(
     }
 
     if *dst_finished {
-        if let Err(_) = packet_dst.send(packet_box) {
-            if !is_stopping(wait_until_not_paused(scheduler_status)) {
-                error!("Demuxer send packet failed, destination already finished");
-            }
+        if packet_dst.send(packet_box).is_err()
+            && !is_stopping(wait_until_not_paused(scheduler_status))
+        {
+            error!("Demuxer send packet failed, destination already finished");
         }
 
         return AVERROR_EOF;
     }
 
-    if let Err(_) = packet_dst.send(packet_box) {
+    if packet_dst.send(packet_box).is_err() {
         if !is_stopping(wait_until_not_paused(scheduler_status)) {
             error!("Demuxer send packet failed, destination already finished");
         }
@@ -1124,7 +1124,7 @@ unsafe fn demux_flush(
             },
         };
 
-        if let Err(_) = packet_dst.send(packet_box) {
+        if packet_dst.send(packet_box).is_err() {
             error!("Demuxer send packet failed, destination already finished");
             return AVERROR_EOF;
         }

@@ -134,6 +134,7 @@ unsafe impl Send for Muxer {}
 unsafe impl Sync for Muxer {}
 
 impl Muxer {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         url: String,
         is_set_write_callback: bool,

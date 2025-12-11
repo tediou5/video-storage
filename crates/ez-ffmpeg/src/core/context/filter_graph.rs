@@ -6,6 +6,7 @@ use crossbeam_channel::{Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 
+type Src = (Sender<FrameBox>, Receiver<FrameBox>, Arc<[AtomicBool]>);
 pub(crate) struct FilterGraph {
     pub(crate) graph_desc: String,
     pub(crate) hw_device: Option<String>,
@@ -13,7 +14,7 @@ pub(crate) struct FilterGraph {
     pub(crate) inputs: Vec<InputFilter>,
     pub(crate) outputs: Vec<OutputFilter>,
 
-    pub(crate) src: Option<(Sender<FrameBox>, Receiver<FrameBox>, Arc<[AtomicBool]>)>,
+    pub(crate) src: Option<Src>,
 
     pub(crate) node: Arc<SchNode>,
 }

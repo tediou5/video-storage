@@ -51,6 +51,7 @@ unsafe impl Send for Demuxer {}
 unsafe impl Sync for Demuxer {}
 
 impl Demuxer {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         url: String,
         is_set_read_callback: bool,

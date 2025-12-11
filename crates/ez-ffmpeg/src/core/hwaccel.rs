@@ -55,7 +55,7 @@ pub(crate) fn init_filter_hw_device(hw_device: &str) -> i32 {
         return 0;
     }
     match hw_device_init_from_string(hw_device) {
-        (err, Some(dev)) if err == 0 => {
+        (0, Some(dev)) => {
             FILTER_HW_DEVICE.set(Mutex::new(Some(dev.clone()))).ok();
             0
         }

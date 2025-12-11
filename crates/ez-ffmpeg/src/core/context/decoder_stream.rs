@@ -32,6 +32,7 @@ pub(crate) struct DecoderStream {
 }
 
 impl DecoderStream {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         stream_index: usize,
         stream: *mut AVStream,

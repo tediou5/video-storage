@@ -4,6 +4,8 @@ use crate::core::context::{null_frame, CodecContext, FrameBox, FrameData, Packet
 use crate::core::scheduler::ffmpeg_scheduler::{
     is_stopping, packet_is_null, set_scheduler_error, wait_until_not_paused,
 };
+#[cfg(not(feature = "docs-rs"))]
+use crate::core::scheduler::FrameSenders;
 use crate::error::DecodingOperationError::DecodeSubtitleError;
 use crate::error::Error::{Bug, Decoding, OpenDecoder};
 use crate::error::{
@@ -16,7 +18,7 @@ use crate::hwaccel::{
 };
 use crate::util::ffmpeg_utils::av_err2str;
 use crate::util::ffmpeg_utils::av_rescale_q_rnd;
-use crossbeam_channel::{RecvTimeoutError, Sender};
+use crossbeam_channel::RecvTimeoutError;
 use ffmpeg_next::packet::{Mut, Ref};
 use ffmpeg_next::{Frame, Packet};
 use ffmpeg_sys_next::AVHWDeviceType::AV_HWDEVICE_TYPE_QSV;
@@ -41,7 +43,7 @@ use ffmpeg_sys_next::{av_channel_layout_copy, AV_CODEC_FLAG_COPY_OPAQUE};
 use log::{debug, error, info, trace, warn};
 use std::ffi::{c_void, CStr, CString};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -211,8 +213,7 @@ pub(crate) fn dec_init(
                     {
                         let dp = dp_arc.clone();
                         let dp = dp.lock().unwrap();
-                        (*frame.as_mut_ptr()).opaque =
-                            FrameOpaque::FrameOpaqueEof as i32 as *mut c_void;
+                        (*frame.as_mut_ptr()).opaque = FrameOpaque::Eof as i32 as *mut c_void;
                         (*frame.as_mut_ptr()).pts = if dp.last_frame_pts == AV_NOPTS_VALUE {
                             AV_NOPTS_VALUE
                         } else {
@@ -279,7 +280,7 @@ unsafe fn transcode_subtitles(
     mut packet_box: PacketBox,
     packet_pool: &ObjPool<Packet>,
     frame_pool: &ObjPool<Frame>,
-    senders: &Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>,
+    senders: &FrameSenders,
 ) -> crate::error::Result<()> {
     if !packet_is_null(&packet_box.packet)
         && (*packet_box.packet.as_ptr()).stream_index >= 0
@@ -402,7 +403,7 @@ unsafe fn process_subtitle(
     dp_arc: Arc<Mutex<DecoderParameter>>,
     frame: Frame,
     frame_pool: &ObjPool<Frame>,
-    senders: &Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>,
+    senders: &FrameSenders,
 ) -> crate::error::Result<()> {
     let frame_ptr = frame.as_ptr();
     if (*frame_ptr).buf[0].is_null() {
@@ -559,7 +560,7 @@ unsafe fn copy_av_subtitle(dst: *mut AVSubtitle, src: *const AVSubtitle) -> i32 
             let buf_size = if (*src_rect).type_ == SUBTITLE_BITMAP && j == 1 {
                 AVPALETTE_SIZE
             } else {
-                (*src_rect).h * (*src_rect).linesize[j as usize] 
+                (*src_rect).h * (*src_rect).linesize[j as usize]
             };
 
             if !(*src_rect).data[j as usize].is_null() {
@@ -589,7 +590,7 @@ fn fix_sub_duration_heartbeat(_dp_arc: Arc<Mutex<DecoderParameter>>, _signal_pts
 unsafe fn dec_send(
     mut frame_box: FrameBox,
     frame_pool: &ObjPool<Frame>,
-    senders: &Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>,
+    senders: &FrameSenders,
 ) -> crate::error::Result<()> {
     let mut nb_done = 0;
     for (i, (sender, fg_input_index, finished_flag_list)) in senders.iter().enumerate() {
@@ -632,7 +633,7 @@ unsafe fn dec_send(
                 frame: to_send,
                 frame_data,
             };
-            if let Err(_) = sender.send(frame_box) {
+            if sender.send(frame_box).is_err() {
                 debug!("Decoder send frame failed, destination already finished");
                 nb_done += 1;
                 continue;
@@ -640,7 +641,7 @@ unsafe fn dec_send(
         } else {
             frame_box.frame_data.fg_input_index = *fg_input_index;
 
-            if let Err(_) = sender.send(frame_box) {
+            if sender.send(frame_box).is_err() {
                 debug!("Decoder send frame failed, destination already finished");
                 nb_done += 1;
             }
@@ -1183,10 +1184,7 @@ struct Decoder {
     decode_errors: u64,
 }
 
-fn dec_done(
-    dp_arc: &Arc<Mutex<DecoderParameter>>,
-    senders: &Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>,
-) {
+fn dec_done(dp_arc: &Arc<Mutex<DecoderParameter>>, senders: &FrameSenders) {
     for (sender, fg_input_index, finished_flag_list) in senders {
         if !finished_flag_list.is_empty()
             && *fg_input_index < finished_flag_list.len()
@@ -1197,7 +1195,7 @@ fn dec_done(
 
         let mut frame_box = unsafe { dec_frame_to_box(dp_arc.clone(), null_frame()) };
         frame_box.frame_data.fg_input_index = *fg_input_index;
-        if let Err(_) = sender.send(frame_box) {
+        if sender.send(frame_box).is_err() {
             debug!("Decoder send EOF failed, destination already finished");
         }
     }
@@ -1215,10 +1213,10 @@ const FFMPEG_ERROR_RATE_EXCEEDED: i32 = fferrtag(b'E', b'R', b'E', b'D');*/
 #[repr(i32)]
 enum FrameOpaque {
     #[allow(dead_code)]
-    FrameOpaqueSubHeartbeat = 1,
-    FrameOpaqueEof,
+    SubHeartbeat = 1,
+    Eof,
     #[allow(dead_code)]
-    FrameOpaqueSendCommand,
+    SendCommand,
 }
 
 #[cfg(not(feature = "docs-rs"))]
@@ -1228,7 +1226,7 @@ unsafe fn packet_decode(
     packet_box: PacketBox,
     packet_pool: &ObjPool<Packet>,
     frame_pool: &ObjPool<Frame>,
-    senders: &Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>,
+    senders: &FrameSenders,
 ) -> crate::error::Result<()> {
     let dec_ctx = {
         let dp = dp_arc.clone();

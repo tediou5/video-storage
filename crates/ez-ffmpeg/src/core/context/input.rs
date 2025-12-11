@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 unsafe impl Send for Input {}
 
+type CallBack = Box<dyn FnMut(&mut [u8]) -> i32>;
 pub struct Input {
     /// The URL of the input source.
     ///
@@ -42,7 +43,7 @@ pub struct Input {
     ///     len as i32 // Return the number of bytes written into the buffer
     /// }
     /// ```
-    pub(crate) read_callback: Option<Box<dyn FnMut(&mut [u8]) -> i32>>,
+    pub(crate) read_callback: Option<CallBack>,
 
     /// A callback function for custom seeking within the input stream.
     ///

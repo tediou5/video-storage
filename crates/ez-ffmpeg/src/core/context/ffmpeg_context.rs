@@ -186,7 +186,7 @@ impl FfmpegContext {
 
 const START_AT_ZERO: bool = false;
 
-fn correct_input_start_times(demuxs: &mut Vec<Demuxer>, copy_ts: bool) {
+fn correct_input_start_times(demuxs: &mut [Demuxer], copy_ts: bool) {
     for (i, demux) in demuxs.iter_mut().enumerate() {
         unsafe {
             let is = demux.in_fmt_ctx;
@@ -350,7 +350,7 @@ fn check_output_streams(muxs: &Vec<Muxer>) -> Result<()> {
 /// 2. Chapter auto-copy (`copy_chapters`)
 /// 3. Default auto-copy (`copy_metadata_default`)
 /// 4. User-specified metadata (`of_add_metadata`)
-unsafe fn process_metadata(mux: &Muxer, demuxs: &Vec<Demuxer>) -> Result<()> {
+unsafe fn process_metadata(mux: &Muxer, demuxs: &[Demuxer]) -> Result<()> {
     use crate::core::metadata::MetadataType;
     use crate::core::metadata::{
         copy_chapters_from_input, copy_metadata, copy_metadata_default, of_add_metadata,
@@ -534,8 +534,8 @@ unsafe fn expand_stream_maps(mux: &mut Muxer, demuxs: &[Demuxer]) -> Result<()> 
 
         // FFmpeg reference: opt_map line 520 - parse stream specifier
         // FFmpeg reference: opt_map line 533 - handle '?' suffix for allow_unused
-        let (spec_str, allow_unused) = if remainder.ends_with('?') {
-            (&remainder[..remainder.len() - 1], true)
+        let (spec_str, allow_unused) = if let Some(stripped) = remainder.strip_suffix('?') {
+            (stripped, true)
         } else {
             (remainder, false)
         };
@@ -545,8 +545,8 @@ unsafe fn expand_stream_maps(mux: &mut Muxer, demuxs: &[Demuxer]) -> Result<()> 
             StreamSpecifier::default()
         } else {
             // Strip leading ':' and parse stream specifier
-            let spec_str = if spec_str.starts_with(':') {
-                &spec_str[1..]
+            let spec_str = if let Some(stripped) = spec_str.strip_prefix(':') {
+                stripped
             } else {
                 spec_str
             };
@@ -620,9 +620,9 @@ unsafe fn expand_stream_maps(mux: &mut Muxer, demuxs: &[Demuxer]) -> Result<()> 
 }
 
 fn outputs_bind(
-    muxs: &mut Vec<Muxer>,
+    muxs: &mut [Muxer],
     filter_graphs: &mut Vec<FilterGraph>,
-    demuxs: &mut Vec<Demuxer>,
+    demuxs: &mut [Demuxer],
 ) -> Result<()> {
     // FFmpeg reference: ffmpeg.c calls opt_map during command-line parsing
     // We parse and expand stream maps early, before processing individual streams
@@ -664,7 +664,7 @@ fn map_manual(
     mux: &mut Muxer,
     stream_map: &StreamMap,
     filter_graphs: &mut Vec<FilterGraph>,
-    demuxs: &mut Vec<Demuxer>,
+    demuxs: &mut [Demuxer],
 ) -> Result<()> {
     // FFmpeg reference: ffmpeg_mux_init.c:1720-1721 - check disabled flag
     if stream_map.disabled {
@@ -1147,7 +1147,7 @@ fn configure_output_filter_opts(
 fn map_auto_streams(
     mux_index: usize,
     mux: &mut Muxer,
-    demuxs: &mut Vec<Demuxer>,
+    demuxs: &mut [Demuxer],
     filter_graphs: &mut Vec<FilterGraph>,
     auto_disable: i32,
 ) -> Result<()> {
@@ -1190,7 +1190,7 @@ unsafe fn map_auto_subtitle(
 #[cfg(not(feature = "docs-rs"))]
 unsafe fn map_auto_subtitle(
     mux: &mut Muxer,
-    demuxs: &mut Vec<Demuxer>,
+    demuxs: &mut [Demuxer],
     oformat: *const AVOutputFormat,
     auto_disable: i32,
 ) -> Result<()> {
@@ -1281,7 +1281,7 @@ unsafe fn map_auto_data(
 #[cfg(not(feature = "docs-rs"))]
 unsafe fn map_auto_data(
     mux: &mut Muxer,
-    demuxs: &mut Vec<Demuxer>,
+    demuxs: &mut [Demuxer],
     oformat: *const AVOutputFormat,
     auto_disable: i32,
 ) -> Result<()> {
@@ -1366,7 +1366,7 @@ unsafe fn map_auto_stream(
 unsafe fn map_auto_stream(
     mux_index: usize,
     mux: &mut Muxer,
-    demuxs: &mut Vec<Demuxer>,
+    demuxs: &mut [Demuxer],
     oformat: *const AVOutputFormat,
     media_type: AVMediaType,
     filter_graphs: &mut Vec<FilterGraph>,
@@ -1463,6 +1463,7 @@ unsafe fn map_auto_stream(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn init_simple_filtergraph(
     demux: &mut Demuxer,
     stream_index: usize,
@@ -1632,14 +1633,12 @@ fn streamcopy_init(
 fn output_bind_by_unlabeled_filter(
     index: usize,
     mux: &mut Muxer,
-    filter_graphs: &mut Vec<FilterGraph>,
+    filter_graphs: &mut [FilterGraph],
     auto_disable: &mut i32,
 ) -> Result<()> {
     let fg_len = filter_graphs.len();
 
-    for i in 0..fg_len {
-        let filter_graph = &mut filter_graphs[i];
-
+    for filter_graph in filter_graphs.iter_mut().take(fg_len) {
         for i in 0..filter_graph.outputs.len() {
             let option = {
                 let output_filter = &filter_graph.outputs[i];
@@ -1790,7 +1789,7 @@ fn check_duplicate_inputs_outputs(inputs: &[Input], outputs: &[Output]) -> Resul
     Ok(())
 }
 
-fn open_output_files(outputs: &mut Vec<Output>, copy_ts: bool) -> Result<Vec<Muxer>> {
+fn open_output_files(outputs: &mut [Output], copy_ts: bool) -> Result<Vec<Muxer>> {
     let mut muxs = Vec::new();
 
     for (i, output) in outputs.iter_mut().enumerate() {
@@ -2058,14 +2057,17 @@ unsafe fn output_requires_seek(fmt_ctx: *mut AVFormatContext) -> bool {
     false
 }
 
+type InputRead = Box<dyn FnMut(&mut [u8]) -> i32>;
 struct InputOpaque {
-    read: Box<dyn FnMut(&mut [u8]) -> i32>,
+    read: InputRead,
     seek: Option<Box<dyn FnMut(i64, i32) -> i64>>,
 }
 
 #[allow(dead_code)]
+type OutputWrite = Box<dyn FnMut(&[u8]) -> i32>;
+#[allow(dead_code)]
 struct OutputOpaque {
-    write: Box<dyn FnMut(&[u8]) -> i32>,
+    write: OutputWrite,
     seek: Option<Box<dyn FnMut(i64, i32) -> i64>>,
 }
 
@@ -2114,7 +2116,7 @@ unsafe extern "C" fn seek_packet_wrapper(
     }
 }
 
-fn fg_bind_inputs(filter_graphs: &mut Vec<FilterGraph>, demuxs: &mut Vec<Demuxer>) -> Result<()> {
+fn fg_bind_inputs(filter_graphs: &mut [FilterGraph], demuxs: &mut [Demuxer]) -> Result<()> {
     if filter_graphs.is_empty() {
         return Ok(());
     }
@@ -2134,7 +2136,7 @@ struct FilterLabel {
     media_type: AVMediaType,
 }
 
-fn bind_fg_inputs_by_fg(filter_graphs: &mut Vec<FilterGraph>) -> Result<()> {
+fn bind_fg_inputs_by_fg(filter_graphs: &mut [FilterGraph]) -> Result<()> {
     let fg_labels = filter_graphs
         .iter()
         .map(|filter_graph| {
@@ -2212,7 +2214,7 @@ fn bind_fg_inputs_by_fg(filter_graphs: &mut Vec<FilterGraph>) -> Result<()> {
 fn fg_complex_bind_input(
     filter_graph: &mut FilterGraph,
     input_filter_index: usize,
-    demuxs: &mut Vec<Demuxer>,
+    demuxs: &mut [Demuxer],
 ) -> Result<()> {
     let graph_desc = &filter_graph.graph_desc;
     let input_filter = &mut filter_graph.inputs[input_filter_index];
@@ -2391,7 +2393,7 @@ fn ifilter_bind_ist(
 fn fg_find_input_idx_by_linklabel(
     linklabel: &str,
     filter_media_type: AVMediaType,
-    demuxs: &mut Vec<Demuxer>,
+    demuxs: &mut [Demuxer],
     desc: &str,
 ) -> Result<(usize, usize)> {
     // Remove brackets if present
@@ -2419,17 +2421,18 @@ fn fg_find_input_idx_by_linklabel(
     let spec_str = if remainder.is_empty() {
         // No specifier - will match by media type
         ""
-    } else if remainder.starts_with(':') {
-        &remainder[1..]
+    } else if let Some(stripped) = remainder.strip_prefix(':') {
+        stripped
     } else {
         remainder
     };
 
     let stream_spec = if spec_str.is_empty() {
         // No specifier: create one matching the filter's media type
-        let mut spec = StreamSpecifier::default();
-        spec.media_type = Some(filter_media_type);
-        spec
+        StreamSpecifier {
+            media_type: Some(filter_media_type),
+            ..Default::default()
+        }
     } else {
         // Parse the specifier
         StreamSpecifier::parse(spec_str).map_err(|e| {
@@ -2699,7 +2702,7 @@ unsafe fn describe_filter_link(
     Ok(name)
 }
 
-fn open_input_files(inputs: &mut Vec<Input>, copy_ts: bool) -> Result<Vec<Demuxer>> {
+fn open_input_files(inputs: &mut [Input], copy_ts: bool) -> Result<Vec<Demuxer>> {
     let mut demuxs = Vec::new();
     for (i, input) in inputs.iter_mut().enumerate() {
         unsafe {

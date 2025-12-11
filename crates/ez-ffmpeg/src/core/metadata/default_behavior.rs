@@ -37,6 +37,7 @@ fn clamp_i128_to_i64(value: i128) -> i64 {
 /// - `stream_input_mapping` contains valid indices into input_ctxs
 /// - `encoding_streams` contains valid stream indices
 /// - All contexts remain valid for the duration of this call
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn copy_metadata_default(
     input_ctxs: &[*const AVFormatContext],
     output_ctx: *mut AVFormatContext,
@@ -74,25 +75,25 @@ pub unsafe fn copy_metadata_default(
         // These keys are typically encoder/software specific and shouldn't be copied
         av_dict_set(
             &mut output_ref.metadata,
-            b"creation_time\0".as_ptr() as *const i8,
+            c"creation_time".as_ptr(),
             std::ptr::null(),
             0,
         );
         av_dict_set(
             &mut output_ref.metadata,
-            b"company_name\0".as_ptr() as *const i8,
+            c"company_name".as_ptr(),
             std::ptr::null(),
             0,
         );
         av_dict_set(
             &mut output_ref.metadata,
-            b"product_name\0".as_ptr() as *const i8,
+            c"product_name".as_ptr(),
             std::ptr::null(),
             0,
         );
         av_dict_set(
             &mut output_ref.metadata,
-            b"product_version\0".as_ptr() as *const i8,
+            c"product_version".as_ptr(),
             std::ptr::null(),
             0,
         );
@@ -101,7 +102,7 @@ pub unsafe fn copy_metadata_default(
         if recording_time_set {
             av_dict_set(
                 &mut output_ref.metadata,
-                b"duration\0".as_ptr() as *const i8,
+                c"duration".as_ptr(),
                 std::ptr::null(),
                 0,
             );
@@ -166,7 +167,7 @@ pub unsafe fn copy_metadata_default(
             if encoding_streams.contains(&output_idx) {
                 av_dict_set(
                     &mut output_stream.metadata,
-                    b"encoder\0".as_ptr() as *const i8,
+                    c"encoder".as_ptr(),
                     std::ptr::null(),
                     0,
                 );

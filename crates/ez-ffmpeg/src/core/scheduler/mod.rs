@@ -1,8 +1,14 @@
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+use crossbeam_channel::Sender;
 use ffmpeg_sys_next::AVMediaType;
 use ffmpeg_sys_next::AVMediaType::{
     AVMEDIA_TYPE_ATTACHMENT, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_DATA, AVMEDIA_TYPE_SUBTITLE,
     AVMEDIA_TYPE_VIDEO,
 };
+
+use crate::core::context::FrameBox;
 
 mod dec_task;
 mod demux_task;
@@ -62,6 +68,8 @@ pub(crate) mod filter_task;
 mod frame_filter_pipeline;
 pub(crate) mod input_controller;
 mod mux_task;
+
+type FrameSenders = Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>;
 
 pub(crate) fn type_to_symbol(media_type: AVMediaType) -> String {
     match media_type {
