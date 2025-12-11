@@ -950,6 +950,7 @@ fn enc_open(
             )));
         }
 
+        info!("Encoder: threads={}", (*enc_ctx).thread_count);
         if (*enc_ctx).bit_rate != 0
             && (*enc_ctx).bit_rate < 1000
             && (*enc_ctx).codec_id != AV_CODEC_ID_CODEC2

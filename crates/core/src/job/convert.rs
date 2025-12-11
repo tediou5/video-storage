@@ -403,6 +403,7 @@ pub fn convert(
         codecs,
         ..
     } = job;
+    let threads = job.need_permit().to_string();
 
     // Create outputs for each codec+resolution combination
     let mut outputs = Vec::new();
@@ -428,6 +429,8 @@ pub fn convert(
                 .add_stream_map(format!("v{scale_idx}{}", codec.segment_prefix("")));
             output_builder = codec
                 .apply_codec_settings(output_builder)
+                .set_audio_codec_opt("threads", &threads)
+                .set_video_codec_opt("threads", &threads)
                 .set_video_codec_opt("crf", crf.to_string())
                 .set_format("hls")
                 .set_format_opt("hls_time", HLS_SEGMENT_DURATION.to_string())

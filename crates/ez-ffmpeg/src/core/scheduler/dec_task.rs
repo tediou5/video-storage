@@ -721,8 +721,8 @@ fn dec_open(
         (*dec_ctx).pkt_timebase = dec_stream.time_base;
 
         let mut dec_opts: *mut AVDictionary = std::ptr::null_mut();
-        let opt_key = CString::new("threads".to_string()).unwrap();
-        let opt_val = CString::new("auto".to_string()).unwrap();
+        let opt_key = CString::new("threads").unwrap();
+        let opt_val = CString::new("1").unwrap();
         av_dict_set(&mut dec_opts, opt_key.as_ptr(), opt_val.as_ptr(), 0);
 
         {
@@ -772,6 +772,7 @@ fn dec_open(
             )));
         }
 
+        info!("Decoder: threads={}", (*dec_ctx).thread_count);
         if !(*dec_ctx).hw_device_ctx.is_null() {
             // Update decoder extra_hw_frames option to account for the
             // frames held in queues inside the ffmpeg utility.  This is
