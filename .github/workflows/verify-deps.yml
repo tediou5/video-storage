@@ -98,7 +98,7 @@ jobs:
                   . "$HOME/.cargo/env"
                   echo "::group::Building project"
                   cargo --version
-                  cargo build --all-features
+                  cargo build
                   echo "::endgroup::"
 
             - name: Verify binary works
@@ -263,8 +263,7 @@ jobs:
             - name: Build and test
               run: |
                   echo "::group::Building and testing"
-                  cargo build --all-features
-                  cargo test --all-features
+                  cargo build
                   ./target/debug/video-storage --version
                   echo "::endgroup::"
 

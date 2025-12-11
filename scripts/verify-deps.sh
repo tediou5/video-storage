@@ -418,7 +418,7 @@ test_compilation() {
     # Try to build the project if we're in the right directory
     if [ -f "Cargo.toml" ]; then
         print_msg "$BLUE" "Building project to verify dependencies..."
-        if cargo build --all-features > /dev/null 2>&1; then
+        if cargo build > /dev/null 2>&1; then
             print_msg "$GREEN" "✓ Project builds successfully!"
             return 0
         else

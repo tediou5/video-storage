@@ -152,18 +152,15 @@ jobs:
                   export MAKEFLAGS="-j$(nproc)"
 
                   # Build with incremental compilation
-                  cargo build --all-features
+                  cargo build
 
             # Clippy
             - name: Run clippy
-              run: cargo clippy --all-targets --all-features -- -D warnings
+              run: make check
 
             # Tests
             - name: Run tests with nextest
-              run: cargo nextest run --all-features
-
-            - name: Run doc tests
-              run: cargo test --doc --all-features
+              run: make test
 
             # Verify binary
             - name: Verify binary
@@ -224,7 +221,7 @@ jobs:
             - name: Test compilation
               run: |
                   cargo --version
-                  cargo build --all-features
+                  cargo build
 
             # Test that the binary runs
             - name: Test binary execution
@@ -280,7 +277,7 @@ jobs:
             - name: Check compilation
               run: |
                   export MAKEFLAGS="-j$(nproc)"
-                  cargo check --all-targets --all-features
+                  cargo check
 
     # Final status check
     ci-success:

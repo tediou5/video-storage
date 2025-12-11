@@ -25,7 +25,7 @@ cargo check
 
 ```bash
 # Run Rust unittests
-cargo nextest run --all-features # Preferred test runner
+cargo nextest run # Preferred test runner
 ```
 
 **Important Notes for Testing:**
@@ -39,7 +39,7 @@ cargo nextest run --all-features # Preferred test runner
 ```bash
 # Rust
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features
+cargo clippy
 ```
 
 ## High-Level Architecture
@@ -78,6 +78,7 @@ video-storage/
 │   │   │   └── error.rs          # Claim error types
 │   │   └── Cargo.toml
 │   ├── xorf/                     # Binary fuse filters for efficient membership testing
+│   ├── ez-ffmpeg/                # Forked ffmpeg bindings for Rust
 │   ├── twox-hash/                # Fast non-cryptographic hash functions
 │   └── test-server/              # Test utilities crate
 ├── docs/                         # Project documentation

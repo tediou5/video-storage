@@ -3,9 +3,6 @@ name = "video-storage-core"
 version.workspace = true
 edition.workspace = true
 
-[features]
-debug = []
-
 [[bin]]
 name = "video-storage"
 path = "src/main.rs"
@@ -14,7 +11,6 @@ path = "src/main.rs"
 # Core dependencies
 bytes.workspace = true
 ffmpeg-next.workspace = true
-ez-ffmpeg.workspace = true
 futures.workspace = true
 mime_guess.workspace = true
 
@@ -54,6 +50,7 @@ parking_lot.workspace = true
 
 # Local dependencies
 video-storage-claim = { path = "../claim" }
+ez-ffmpeg = { path = "../ez-ffmpeg" }
 xorf = { path = "../xorf" }
 
 [dev-dependencies]
