@@ -3,9 +3,6 @@ name = "video-storage-core"
 version.workspace = true
 edition.workspace = true
 
-[features]
-debug = []
-
 [[bin]]
 name = "video-storage"
 path = "src/main.rs"

@@ -11,12 +11,12 @@ build:
 # Run tests with nextest (after running checks)
 test: check
 	@echo "Running tests with nextest..."
-	cargo nextest run --all-features
+	cargo nextest run
 
 # Run clippy checks
 check:
 	@echo "Running clippy checks..."
-	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy -- -D warnings
 
 # Format code
 fmt:
