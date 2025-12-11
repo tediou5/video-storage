@@ -757,6 +757,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "no videotoolbox in my pc"]
     fn test_to_stdout() {
         let _ = env_logger::builder()
             .filter_level(log::LevelFilter::Trace)
@@ -779,6 +780,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "no videotoolbox in my pc"]
     fn test_thumbnail() {
         let _ = env_logger::builder()
             .filter_level(log::LevelFilter::Trace)
@@ -985,6 +987,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "no videotoolbox in my pc"]
     fn test_hwaccel() {
         let _ = env_logger::builder()
             .filter_level(log::LevelFilter::Trace)
