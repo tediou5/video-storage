@@ -500,7 +500,7 @@ unsafe fn write_packet(
     oformat_flags: i32,
     st_last_dts_map: &mut HashMap<i32, i64>,
     out_fmt_ctx_box: &AVFormatContextBox,
-    mut sq_packet_box: &mut PacketBox,
+    sq_packet_box: &mut PacketBox,
 ) -> i32 {
     mux_fixup_ts(
         st_rescale_delta_last_map,

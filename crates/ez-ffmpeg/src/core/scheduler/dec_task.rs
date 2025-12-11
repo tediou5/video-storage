@@ -559,7 +559,7 @@ unsafe fn copy_av_subtitle(dst: *mut AVSubtitle, src: *const AVSubtitle) -> i32 
             let buf_size = if (*src_rect).type_ == SUBTITLE_BITMAP && j == 1 {
                 AVPALETTE_SIZE
             } else {
-                ((*src_rect).h * (*src_rect).linesize[j as usize])
+                (*src_rect).h * (*src_rect).linesize[j as usize] 
             };
 
             if !(*src_rect).data[j as usize].is_null() {
