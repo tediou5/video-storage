@@ -2895,7 +2895,7 @@ unsafe fn read_binary(path: *mut c_char) -> crate::error::Result<(*mut c_void, i
     }
 
     let fsize = avio_size(io);
-    if fsize < 0 || fsize > i64::MAX {
+    if fsize < 0 {
         error!(
             "Cannot obtain size of file '{}'",
             CStr::from_ptr(path).to_str().unwrap_or("[unknow path]")
