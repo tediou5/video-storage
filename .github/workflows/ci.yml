@@ -59,7 +59,8 @@ jobs:
               run: |
                   dnf install -y git epel-release
                   dnf config-manager --set-enabled crb
-                  dnf install -y gcc gcc-c++ make cmake pkgconfig
+                  # rockylinux:9 ships curl-minimal by default; installing curl can conflict.
+                  dnf install -y gcc gcc-c++ make cmake pkgconfig ca-certificates
 
             # Install Rust
             - name: Install Rust
@@ -161,6 +162,61 @@ jobs:
             # Tests
             - name: Run tests with nextest
               run: make test
+
+            - name: Run S3 integration tests (MinIO)
+              run: |
+                  set -euo pipefail
+
+                  endpoint=http://127.0.0.1:9000
+
+                  # Install MinIO client (mc)
+                  mc_bin=/tmp/mc
+                  curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$mc_bin"
+                  chmod +x "$mc_bin"
+
+                  # Install MinIO server
+                  arch="$(uname -m)"
+                  case "$arch" in
+                      x86_64|amd64) minio_arch=amd64 ;;
+                      aarch64|arm64) minio_arch=arm64 ;;
+                      *) echo "unsupported arch: $arch" >&2; exit 1 ;;
+                  esac
+                  minio_bin=/tmp/minio
+                  curl -fsSL "https://dl.min.io/server/minio/release/linux-${minio_arch}/minio" -o "$minio_bin"
+                  chmod +x "$minio_bin"
+
+                  data_dir="$(mktemp -d /tmp/vs-minio-data.XXXXXX)"
+                  export MINIO_ROOT_USER=minioadmin
+                  export MINIO_ROOT_PASSWORD=minioadmin
+                  export MINIO_BROWSER=off
+                  "$minio_bin" server "$data_dir" --address 127.0.0.1:9000 >/tmp/vs-minio.log 2>&1 &
+                  minio_pid=$!
+                  trap 'kill "$minio_pid" >/dev/null 2>&1 || true; rm -rf "$data_dir" || true' EXIT
+
+                  # Wait for MinIO to be ready
+                  for i in {1..60}; do
+                      if curl -fsS "$endpoint/minio/health/ready" >/dev/null; then
+                          break
+                      fi
+                      sleep 1
+                  done
+                  if ! curl -fsS "$endpoint/minio/health/ready" >/dev/null; then
+                      echo "MinIO not ready" >&2
+                      tail -n 200 /tmp/vs-minio.log >&2 || true
+                      exit 1
+                  fi
+
+                  "$mc_bin" alias set vsminio "$endpoint" minioadmin minioadmin
+                  "$mc_bin" mb -p vsminio/vs-test-src
+                  "$mc_bin" mb -p vsminio/vs-test-dst
+
+                  VS_TEST_S3_ENDPOINT="$endpoint" \
+                  VS_TEST_S3_REGION=us-east-1 \
+                  VS_TEST_S3_ACCESS_KEY_ID=minioadmin \
+                  VS_TEST_S3_SECRET_ACCESS_KEY=minioadmin \
+                  VS_TEST_S3_SRC_BUCKET=vs-test-src \
+                  VS_TEST_S3_DST_BUCKET=vs-test-dst \
+                  cargo test -p video-storage-core --test s3_optional_integration_test -- --ignored
 
             # Verify binary
             - name: Verify binary
