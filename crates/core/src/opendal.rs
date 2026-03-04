@@ -3,7 +3,8 @@ use async_stream::try_stream;
 use futures::StreamExt;
 use opendal::services::S3;
 use opendal::{Operator, layers::RetryLayer};
-use std::collections::VecDeque;
+use parking_lot::RwLock;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,7 +22,6 @@ pub struct StorageConfig {
 pub enum StorageBackend {
     Local,
     S3 {
-        bucket: String,
         endpoint: Option<String>,
         region: Option<String>,
         access_key_id: String,
@@ -32,60 +32,95 @@ pub enum StorageBackend {
 /// Storage manager to handle different storage backends
 #[derive(Clone)]
 pub struct StorageManager {
-    operator: Option<Operator>,
+    backend: StorageBackend,
+    s3_operators: Arc<RwLock<HashMap<String, Operator>>>,
 }
 
 impl StorageManager {
     pub async fn new(config: StorageConfig) -> Result<Self> {
-        let operator = match &config.backend {
+        match &config.backend {
             StorageBackend::Local => {
-                info!("Using local filesystem storage - no OpenDAL operator needed");
-                None
+                info!("Using local filesystem storage");
             }
             StorageBackend::S3 {
-                bucket,
                 endpoint,
                 region,
-                access_key_id,
-                secret_access_key,
+                access_key_id: _,
+                secret_access_key: _,
             } => {
-                let op = build_s3_operator(
-                    bucket,
-                    endpoint.as_deref(),
-                    region.as_deref(),
-                    access_key_id,
-                    secret_access_key,
-                )?;
-                Some(op)
-            }
-        };
-
-        Ok(Self { operator })
-    }
-
-    pub fn operator(&self) -> Option<&Operator> {
-        self.operator.as_ref()
-    }
-
-    pub async fn upload_directory(&self, local_path: &Path, remote_prefix: &str) -> Result<()> {
-        match &self.operator {
-            None => {
-                // For local storage, no upload needed
-                info!(?local_path, "Using local storage, skipping upload");
-                Ok(())
-            }
-            Some(operator) => {
-                info!(?local_path, %remote_prefix, "Starting directory upload to remote storage");
-
-                upload_tree_streaming(
-                    operator.clone(),
-                    local_path,
-                    remote_prefix,
-                    8, // concurrency
-                )
-                .await
+                info!(
+                    endpoint = ?endpoint,
+                    region = ?region,
+                    "Using S3 storage backend (bucket selected per request/job)"
+                );
             }
         }
+
+        Ok(Self {
+            backend: config.backend,
+            s3_operators: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+
+    pub fn is_s3(&self) -> bool {
+        matches!(self.backend, StorageBackend::S3 { .. })
+    }
+
+    pub fn operator_for_bucket(&self, bucket: &str) -> Result<Operator> {
+        if bucket.is_empty() || bucket.contains('/') {
+            return Err(anyhow!("Invalid bucket name"));
+        }
+
+        let StorageBackend::S3 {
+            endpoint,
+            region,
+            access_key_id,
+            secret_access_key,
+        } = &self.backend
+        else {
+            return Err(anyhow!(
+                "S3 operator requested but storage backend is not S3"
+            ));
+        };
+
+        if let Some(op) = self.s3_operators.read().get(bucket).cloned() {
+            return Ok(op);
+        }
+
+        let op = build_s3_operator(
+            bucket,
+            endpoint.as_deref(),
+            region.as_deref(),
+            access_key_id,
+            secret_access_key,
+        )?;
+
+        let mut w = self.s3_operators.write();
+        Ok(w.entry(bucket.to_string())
+            .or_insert_with(|| op.clone())
+            .clone())
+    }
+
+    pub async fn upload_directory_to_bucket(
+        &self,
+        bucket: &str,
+        local_path: &Path,
+        remote_prefix: &str,
+    ) -> Result<()> {
+        if !self.is_s3() {
+            info!(?local_path, "Using local storage, skipping upload");
+            return Ok(());
+        }
+
+        let operator = self.operator_for_bucket(bucket)?;
+
+        info!(
+            ?local_path,
+            %remote_prefix,
+            %bucket,
+            "Starting directory upload to remote storage"
+        );
+        upload_tree_streaming(operator, local_path, remote_prefix, 8).await
     }
 }
 
@@ -253,6 +288,25 @@ async fn upload_one(op: &Operator, local_root: &Path, file: &Path, prefix: &str)
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_operator_for_bucket_requires_s3_backend() {
+        let temp_dir = tempdir().unwrap();
+        let manager = StorageManager::new(StorageConfig {
+            backend: StorageBackend::Local,
+            workspace: temp_dir.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+
+        assert!(manager.operator_for_bucket("any").is_err());
+    }
+}
+
+#[cfg(test)]
+mod smoke_tests {
     use super::*;
 
     #[tokio::test]

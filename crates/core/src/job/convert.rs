@@ -220,6 +220,13 @@ pub struct ConvertJob {
     pub id: String,
     pub crf: u8, // 0-63
 
+    /// Destination bucket for uploading HLS outputs when storage backend is S3.
+    ///
+    /// For local storage backend, this field is ignored.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dst_bucket: Option<String>,
+
     #[serde(default)]
     #[serde(skip_serializing_if = "Scales::skip_serialize")]
     pub scales: Scales,
@@ -238,6 +245,7 @@ impl ConvertJob {
         Self {
             id,
             crf,
+            dst_bucket: None,
             scales,
             codecs: ConvertCodecs::default(),
             retry_times: Arc::new(AtomicU8::new(0)),
@@ -301,8 +309,8 @@ impl Job for ConvertJob {
     }
 
     fn next_job(&self, state: AppState) -> Option<impl Job> {
-        if state.storage_manager.operator().is_some() {
-            let next = UploadJob::new(self.id.clone());
+        if state.storage_manager.is_s3() {
+            let next = UploadJob::new(self.id.clone(), self.dst_bucket.clone());
 
             let next_c = next.clone();
             let state_c = state.clone();
@@ -792,6 +800,7 @@ mod tests {
         let job = ConvertJob {
             id: "test-job-4".to_string(),
             crf: 20,
+            dst_bucket: None,
             scales: Scales::new(),
             codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),
@@ -812,6 +821,7 @@ mod tests {
         let job = ConvertJob {
             id: "test-job-5".to_string(),
             crf: 18,
+            dst_bucket: None,
             scales: Scales::from_vec(Vec::new()),
             codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),
@@ -837,6 +847,7 @@ mod tests {
         let job = ConvertJob {
             id: "test-job-6".to_string(),
             crf: 22,
+            dst_bucket: None,
             scales: Scales::from_vec(custom_scales),
             codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),
@@ -861,6 +872,7 @@ mod tests {
         let original_job = ConvertJob {
             id: "round-trip-1".to_string(),
             crf: 24,
+            dst_bucket: None,
             scales: Scales::new(),
             codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),
@@ -883,6 +895,7 @@ mod tests {
         let original_job = ConvertJob {
             id: "round-trip-2".to_string(),
             crf: 26,
+            dst_bucket: None,
             scales: Scales::from_vec(custom_scales.clone()),
             codecs: ConvertCodecs::default(),
             retry_times: Arc::new(0.into()),

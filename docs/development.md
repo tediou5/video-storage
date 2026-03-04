@@ -184,12 +184,16 @@ Then run the service:
 ```bash
 cargo run -- \
   --storage-backend s3 \
-  --s3-bucket video-storage \
   --s3-endpoint http://localhost:9000 \
   --s3-region us-east-1 \
   --s3-access-key-id minioadmin \
   --s3-secret-access-key minioadmin
 ```
+
+In S3 mode, the target bucket is selected per request/job:
+- Upload/convert: `POST /upload?...&dst_bucket=video-storage`
+- Playback: `GET /videos/video-storage/<key>`
+- Note: `dst_bucket` must not be numeric-only (e.g. `123`).
 
 ## Common Issues
 

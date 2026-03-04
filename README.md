@@ -131,8 +131,6 @@ Options:
           Configuration file path (overrides all other arguments)
   -s, --storage-backend <STORAGE_BACKEND>
           Storage backend: local or s3 [default: local]
-      --s3-bucket <S3_BUCKET>
-          S3 bucket name (required when storage-backend is s3)
       --s3-endpoint <S3_ENDPOINT>
           S3 endpoint (for MinIO/custom S3)
       --s3-region <S3_REGION>
@@ -172,13 +170,17 @@ cargo build --release
 ```shell
 video-storage -p 1 \
   -s s3 \
-  --s3-bucket video-storage \
   --s3-endpoint http://127.0.0.1:9000 \
   --s3-region us-east-1 \
   --s3-access-key-id minioadmin \
   --s3-secret-access-key minioadmin \
   --webhook-url https://example.com/webhook
 ```
+
+When `storage_backend = "s3"`, the bucket is selected per request/job:
+- Upload/convert: pass `dst_bucket` in the `/upload` query string (e.g. `/upload?...&dst_bucket=my-bucket`)
+- Playback: request via `/videos/<bucket>/<key>` (e.g. `/videos/my-bucket/720/<job_id>.m3u8`)
+- Note: `dst_bucket` must not be numeric-only (e.g. `123`).
 
 ### Using configuration file
 
@@ -209,7 +211,6 @@ workspace = "./data"
 storage_backend = "s3"  # Options: "local" or "s3"
 
 # S3 configuration (required when storage_backend = "s3")
-s3_bucket = "video-storage"
 s3_endpoint = "http://127.0.0.1:9000"
 s3_region = "us-east-1"
 s3_access_key_id = "minioadmin"

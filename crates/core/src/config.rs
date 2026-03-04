@@ -22,7 +22,6 @@ use std::path::Path;
 /// storage_backend = "s3"  # Options: "local" or "s3"
 ///
 /// # S3 configuration (required when storage_backend = "s3")
-/// s3_bucket = "my-video-bucket"
 /// s3_endpoint = "http://localhost:9000"  # Optional: for MinIO or custom S3
 /// s3_region = "us-east-1"                # Optional
 /// s3_access_key_id = "minioadmin"
@@ -68,11 +67,6 @@ pub struct Config {
     #[arg(short, long, default_value = "local")]
     #[serde(default = "default_storage_backend")]
     pub storage_backend: String,
-
-    /// S3 bucket name (required when storage-backend is s3)
-    #[arg(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub s3_bucket: Option<String>,
 
     /// S3 endpoint (for MinIO/custom S3)
     #[arg(long)]
@@ -183,7 +177,6 @@ impl Default for Config {
             workspace: default_workspace(),
             config: None,
             storage_backend: default_storage_backend(),
-            s3_bucket: None,
             s3_endpoint: None,
             s3_region: None,
             s3_access_key_id: None,
@@ -250,9 +243,6 @@ impl Config {
         }
 
         // For Option fields, CLI takes precedence if Some
-        if self.s3_bucket.is_none() {
-            self.s3_bucket = file_config.s3_bucket;
-        }
         if self.s3_endpoint.is_none() {
             self.s3_endpoint = file_config.s3_endpoint;
         }
@@ -284,16 +274,6 @@ impl Config {
                 // Local storage doesn't need additional validation
             }
             "s3" => {
-                if self
-                    .s3_bucket
-                    .as_ref()
-                    .map(|s| s.is_empty())
-                    .unwrap_or(true)
-                {
-                    return Err(anyhow::anyhow!(
-                        "S3 bucket name is required when backend is 's3'"
-                    ));
-                }
                 if self
                     .s3_access_key_id
                     .as_ref()
@@ -345,7 +325,6 @@ impl Config {
         }
 
         Some(S3Config {
-            bucket: self.s3_bucket.clone()?,
             endpoint: self.s3_endpoint.clone(),
             region: self.s3_region.clone(),
             access_key_id: self.s3_access_key_id.clone()?,
@@ -364,7 +343,6 @@ impl Config {
 // S3 configuration subset
 #[derive(Debug, Clone)]
 pub struct S3Config {
-    pub bucket: String,
     pub endpoint: Option<String>,
     pub region: Option<String>,
     pub access_key_id: String,

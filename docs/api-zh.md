@@ -194,6 +194,7 @@ curl http://localhost:32146/waitlist
 
 **接口地址**: `GET /videos/{filename}`
 **认证要求**: 需要有效的 claim 令牌
+**S3 模式要求**: 需要使用 `GET /videos/{bucket}/{key}`（bucket 由上层服务决定）
 
 #### 路径参数
 
@@ -231,16 +232,16 @@ curl http://localhost:32146/waitlist
 ```bash
 # 获取 HLS 播放列表
 curl -H "Authorization: Bearer your_token_here" \
-  http://localhost:32145/videos/video123-1080.m3u8
+  http://localhost:32145/videos/my-bucket/video123-1080.m3u8
 
 # 获取视频片段
 curl -H "Authorization: Bearer your_token_here" \
-  http://localhost:32145/videos/video123-1080-00001.ts
+  http://localhost:32145/videos/my-bucket/video123-1080-00001.ts
 
 # 使用范围请求
 curl -H "Authorization: Bearer your_token_here" \
   -H "Range: bytes=0-1048575" \
-  http://localhost:32145/videos/video123-1080-00001.ts
+  http://localhost:32145/videos/my-bucket/video123-1080-00001.ts
 ```
 
 ## 速率限制
@@ -401,12 +402,16 @@ workspace = "./data"
 
 # S3 存储
 storage_backend = "s3"
-s3_bucket = "my-video-bucket"
 s3_endpoint = "http://localhost:9000"  # MinIO 或自定义 S3
 s3_region = "us-east-1"
 s3_access_key_id = "minioadmin"
 s3_secret_access_key = "minioadmin"
 ```
+
+当使用 `storage_backend = "s3"` 时，bucket 由上层服务在请求/任务参数中指定：
+- 上传/转码：`POST /upload?...&dst_bucket=<bucket>`
+- 播放读取：`GET /videos/<bucket>/<key>`
+- 注意：`dst_bucket` 不允许为纯数字（例如 `123`），以避免与清晰度路径（如 `720/...`）产生歧义。
 
 ### 认证密钥配置
 

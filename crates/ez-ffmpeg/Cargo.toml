@@ -53,6 +53,7 @@ rtmp = ["dep:rml_rtmp", "dep:slab", "dep:dashmap", "flv"]
 flv = ["dep:bytes", "dep:byteorder"]
 static = ["ffmpeg-next/static"]
 docs-rs = ["async", "opengl", "rtmp", "flv"]
+cargo-clippy = []
 
 [package.metadata.docs.rs]
 features = ["docs-rs"]

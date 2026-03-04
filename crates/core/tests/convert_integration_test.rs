@@ -3,6 +3,8 @@ use serde_json::Value as JsonValue;
 use video_storage_core::job::convert::{Scale, Scales};
 use video_storage_test_server::TestServer;
 
+const TEST_BUCKET: &str = "testbucket";
+
 /// Test 480p-only conversion with test.mp4 and webhook monitoring
 #[tokio::test]
 async fn test_480p_conversion() {
@@ -82,17 +84,29 @@ async fn test_480p_conversion() {
         .expect("Failed to create claim");
 
     let response = server
-        .get_with_auth(&client, &format!("/videos/{job_id}.m3u8"), &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/{job_id}.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 200);
 
     let response = server
-        .get_with_auth(&client, &format!("/videos/480/{job_id}.m3u8"), &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/480/{job_id}.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 200);
 
     let response = server
-        .get_with_auth(&client, &format!("/videos/720/{job_id}.m3u8"), &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/720/{job_id}.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 }
