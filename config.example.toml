@@ -18,6 +18,10 @@ storage_backend = "local"         # Storage backend: "local" or "s3"
 # s3_access_key_id = "minioadmin"         # S3 access key ID
 # s3_secret_access_key = "minioadmin"     # S3 secret access key
 
+# Note (S3 mode):
+# - Bucket is selected per request/job (e.g. /upload?...&dst_bucket=... and /videos/<bucket>/<key>)
+# - Internal migration endpoint is available: POST /migrate {src_bucket, dst_bucket, job_id, ...}
+
 # Webhook configuration (optional)
 # Uncomment to enable webhook notifications when jobs complete
 # webhook_url = "https://example.com/webhook"  # Webhook endpoint URL

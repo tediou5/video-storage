@@ -106,6 +106,9 @@ curl -X POST http://localhost:32146/claims \
 |-----|------|-----|------|------|
 | id | string | 是 | 任务ID | 不能包含 '/', '-', '.', ' ' |
 | crf | u8 | 是 | 视频压缩质量参数 | 0-63，值越小质量越高 |
+| dst_bucket | string | 否* | 目标桶（S3 模式下 HLS 产物会上传到该桶） | 不能为空、不能包含 `/`、不允许纯数字 |
+
+> \* 当 `storage_backend = "s3"` 时，`dst_bucket` 为必填；当 `storage_backend = "local"` 时会被忽略。
 
 #### 请求体
 
@@ -142,6 +145,11 @@ curl -X POST http://localhost:32146/claims \
 ```bash
 # 上传视频文件进行转换，CRF=23（适中质量）
 curl -X POST "http://localhost:32146/upload?id=video123&crf=23" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @input.mp4
+
+# S3 模式：需要指定 dst_bucket
+curl -X POST "http://localhost:32146/upload?id=video123&crf=23&dst_bucket=my-bucket" \
   -H "Content-Type: application/octet-stream" \
   --data-binary @input.mp4
 ```
@@ -184,29 +192,99 @@ curl -g -X POST "http://localhost:32146/upload?id=video2&crf=38&codecs[0]=h265" 
 curl http://localhost:32146/waitlist
 ```
 
+### 4. 迁移视频文件到新桶 (Migrate)
+
+将指定 `job_id` 对应的 HLS 产物从 `src_bucket` 迁移到 `dst_bucket`。
+
+**接口地址**: `POST /migrate`
+**认证要求**: 无（仅内部 API）
+**后端要求**: 仅当 `storage_backend = "s3"` 时可用
+
+> 注意：当前版本迁移完成后**不会删除源桶对象**（为安全起见暂时禁用删除）。
+
+#### 请求参数 (JSON Body)
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----|------|-----|------|
+| job_id | string | 是 | 任务ID（同 `/upload?id=...`） |
+| src_bucket | string | 是 | 源桶 |
+| dst_bucket | string | 是 | 目标桶 |
+| widths | Vec<u16> | 否 | 需要迁移的清晰度宽度列表；不传则使用服务内置默认分辨率列表 |
+| dry_run | bool | 否 | 是否只统计不执行复制；默认 false |
+
+Bucket 限制：
+- 不能为空
+- 不能包含 `/`
+- 不允许为纯数字（例如 `123`），以避免与清晰度路径（如 `720/...`）产生歧义
+
+#### 响应格式
+
+成功响应 (200 OK):
+```json
+{
+  "job_id": "video123",
+  "src_bucket": "old-bucket",
+  "dst_bucket": "new-bucket",
+  "dry_run": false,
+  "objects_total": 4,
+  "objects_copied": 4,
+  "bytes_copied": 12345
+}
+```
+
+错误响应：
+
+- 400 Bad Request:
+```json
+{ "job_id": "video123", "message": "错误信息" }
+```
+
+- 500 Internal Server Error:
+```json
+{ "job_id": "video123", "message": "错误信息" }
+```
+
+#### CURL 示例
+
+```bash
+curl -X POST http://localhost:32146/migrate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_id": "video123",
+    "src_bucket": "old-bucket",
+    "dst_bucket": "new-bucket",
+    "widths": [480],
+    "dry_run": false
+  }'
+```
+
 ## 外部 API 接口
 
 外部 API 默认监听在 `0.0.0.0:32145`
 
-### 4. 获取视频文件
+### 5. 获取视频文件
 
 获取转换后的视频文件（HLS 格式）。
 
-**接口地址**: `GET /videos/{filename}`
+**接口地址**: `GET /videos/{bucket}/{key}`
 **认证要求**: 需要有效的 claim 令牌
-**S3 模式要求**: 需要使用 `GET /videos/{bucket}/{key}`（bucket 由上层服务决定）
+
+> 说明：
+> - 在 `storage_backend = "s3"` 时，必须显式带上 `bucket`，服务会按 bucket 读取对象存储。
+> - 在 `storage_backend = "local"` 时，`bucket` 会被忽略（但建议统一带上，便于未来切换到 S3）。
 
 #### 路径参数
 
 | 参数 | 类型 | 必填 | 说明 |
 |-----|------|-----|------|
-| filename | string | 是 | 视频文件名，格式通常为 `{job_id}-{resolution}.m3u8` 或 `{job_id}-{resolution}-{segment}.ts` |
+| bucket | string | 是 | 桶名（由上层服务决定） |
+| key | string | 是 | 桶内对象 key。典型示例：`{job_id}.m3u8`、`480/{job_id}.m3u8`、`480/{job_id}-001.m4s`、`480/{job_id}-init.mp4` |
 
 #### 请求头
 
 | 头部 | 必填 | 说明 |
 |------|-----|------|
-| X-Claim-Token | 是 | 认证令牌 |
+| Authorization | 是 | `Bearer <token>` |
 | Range | 否 | 支持范围请求，格式: `bytes=start-end` |
 
 #### 响应格式
@@ -214,7 +292,8 @@ curl http://localhost:32146/waitlist
 成功响应 (200 OK 或 206 Partial Content):
 - Content-Type: 根据文件类型自动判断
   - .m3u8 文件: application/vnd.apple.mpegurl
-  - .ts 文件: video/mp2t
+  - .m4s 文件: video/iso.segment
+  - .mp4 文件: video/mp4
 - Accept-Ranges: bytes
 - Cache-Control: public,max-age=3600
 - Content-Length: 文件大小或范围大小
@@ -232,16 +311,16 @@ curl http://localhost:32146/waitlist
 ```bash
 # 获取 HLS 播放列表
 curl -H "Authorization: Bearer your_token_here" \
-  http://localhost:32145/videos/my-bucket/video123-1080.m3u8
+  http://localhost:32145/videos/my-bucket/video123.m3u8
 
 # 获取视频片段
 curl -H "Authorization: Bearer your_token_here" \
-  http://localhost:32145/videos/my-bucket/video123-1080-00001.ts
+  http://localhost:32145/videos/my-bucket/480/video123-001.m4s
 
 # 使用范围请求
 curl -H "Authorization: Bearer your_token_here" \
   -H "Range: bytes=0-1048575" \
-  http://localhost:32145/videos/my-bucket/video123-1080-00001.ts
+  http://localhost:32145/videos/my-bucket/480/video123-001.m4s
 ```
 
 ## 速率限制
@@ -351,14 +430,21 @@ curl -X POST http://localhost:32146/claims \
 ```bash
 # 假设返回的令牌为 TOKEN
 TOKEN="your_token_here"
+BUCKET="my-bucket"
 
 # 获取 HLS 主播放列表
 curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:32145/videos/1080/myvideo.m3u8 > playlist.m3u8
+  http://localhost:32145/videos/$BUCKET/myvideo.m3u8 > playlist.m3u8
 
-# 获取视频片段
+# 获取某个清晰度的播放列表（例如 480p）
 curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:32145/videos/1080/myvideo-00001.ts > segment1.ts
+  http://localhost:32145/videos/$BUCKET/480/myvideo.m3u8 > playlist-480.m3u8
+
+# 获取 init segment / media segment
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:32145/videos/$BUCKET/480/myvideo-init.mp4 > init.mp4
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:32145/videos/$BUCKET/480/myvideo-001.m4s > segment1.m4s
 ```
 
 #### 获取h265视频片段
@@ -366,14 +452,15 @@ curl -H "Authorization: Bearer $TOKEN" \
 ```bash
 # 假设返回的令牌为 TOKEN
 TOKEN="your_token_here"
+BUCKET="my-bucket"
 
 # 获取 HLS 主播放列表
 curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:32145/videos/1080/myvideo-h265.m3u8 > h265-playlist.m3u8
+  http://localhost:32145/videos/$BUCKET/myvideo-h265.m3u8 > h265-playlist.m3u8
 
-# 获取h265视频片段
+# 获取h265视频片段（例如 480p）
 curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:32145/videos/1080/myvideo-h265-00001.ts > h265-segment1.ts
+  http://localhost:32145/videos/$BUCKET/480/myvideo-h265-001.m4s > h265-segment1.m4s
 ```
 
 ## 配置说明
@@ -411,6 +498,7 @@ s3_secret_access_key = "minioadmin"
 当使用 `storage_backend = "s3"` 时，bucket 由上层服务在请求/任务参数中指定：
 - 上传/转码：`POST /upload?...&dst_bucket=<bucket>`
 - 播放读取：`GET /videos/<bucket>/<key>`
+- 迁移对象：`POST /migrate {src_bucket, dst_bucket, job_id, ...}`
 - 注意：`dst_bucket` 不允许为纯数字（例如 `123`），以避免与清晰度路径（如 `720/...`）产生歧义。
 
 ### 认证密钥配置

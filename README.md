@@ -180,6 +180,7 @@ video-storage -p 1 \
 When `storage_backend = "s3"`, the bucket is selected per request/job:
 - Upload/convert: pass `dst_bucket` in the `/upload` query string (e.g. `/upload?...&dst_bucket=my-bucket`)
 - Playback: request via `/videos/<bucket>/<key>` (e.g. `/videos/my-bucket/720/<job_id>.m3u8`)
+- Migrate between buckets (internal API): `POST /migrate {src_bucket, dst_bucket, job_id, ...}`
 - Note: `dst_bucket` must not be numeric-only (e.g. `123`).
 
 ### Using configuration file
@@ -242,7 +243,7 @@ Returns JSON with pending job counts.
 example:
 
 ```shell
-curl -X GET http://127.0.0.1:32145/waitlist
+curl -X GET http://127.0.0.1:32146/waitlist
 ```
 
 response:
@@ -258,7 +259,9 @@ response:
 ## Upload video
 
 ```shell
-curl -X POST "http://0.0.0.0:32145/upload?id=video&crf=48" --data-binary @video.mp4 -H "Content-Type: application/octet-stream"
+curl -X POST "http://127.0.0.1:32146/upload?id=video&crf=48" \
+  --data-binary @video.mp4 \
+  -H "Content-Type: application/octet-stream"
 ```
 
 - id: not contain ' ', '-', '/', '.' and not exist
@@ -267,7 +270,8 @@ curl -X POST "http://0.0.0.0:32145/upload?id=video&crf=48" --data-binary @video.
 ## Get resource
 
 ```shell
-http://127.0.0.1:32145/videos/video.m3u8
+curl -H "Authorization: Bearer YOUR_CLAIM_TOKEN" \
+  http://127.0.0.1:32145/videos/my-bucket/video.m3u8
 ```
 
 ## Authentication and Authorization
@@ -320,12 +324,12 @@ Parameters:
 Include the claim token in the Authorization header:
 
 ```shell
-curl -X GET http://127.0.0.1:32145/videos/1920/video123.m3u8 \
+curl -X GET http://127.0.0.1:32145/videos/my-bucket/480/video123.m3u8 \
   -H "Authorization: Bearer YOUR_CLAIM_TOKEN"
 ```
 
 The service will validate:
 1. The token is valid and not expired
 2. The requested asset matches the claim's asset_id
-3. The requested width (1920 in this example) is in the allowed_widths list
+3. The requested width (480 in this example) is in the allowed_widths list
 4. The request is within bandwidth and concurrency limits

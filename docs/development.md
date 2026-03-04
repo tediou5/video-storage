@@ -195,6 +195,29 @@ In S3 mode, the target bucket is selected per request/job:
 - Playback: `GET /videos/video-storage/<key>`
 - Note: `dst_bucket` must not be numeric-only (e.g. `123`).
 
+### S3/MinIO 集成测试（本地默认不跑）
+
+仓库里有一条真正连 MinIO 的 S3 集成测试：`crates/core/tests/s3_optional_integration_test.rs`。
+
+- 本地默认不执行（测试带 `#[ignore]`）
+- CI 会显式用 `--ignored` 跑它
+
+手动运行示例：
+
+1) 启动 MinIO，并创建两个桶（示例：`vs-test-src` / `vs-test-dst`）。
+
+2) 运行测试：
+
+```bash
+VS_TEST_S3_ENDPOINT=http://127.0.0.1:9000 \
+VS_TEST_S3_REGION=us-east-1 \
+VS_TEST_S3_ACCESS_KEY_ID=minioadmin \
+VS_TEST_S3_SECRET_ACCESS_KEY=minioadmin \
+VS_TEST_S3_SRC_BUCKET=vs-test-src \
+VS_TEST_S3_DST_BUCKET=vs-test-dst \
+cargo test -p video-storage-core --test s3_optional_integration_test -- --ignored
+```
+
 ## Common Issues
 
 ### FFmpeg Build Errors
