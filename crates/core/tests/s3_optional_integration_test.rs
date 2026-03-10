@@ -26,6 +26,7 @@ async fn build_operator_for_bucket(
         backend: StorageBackend::S3 {
             endpoint,
             region,
+            default_bucket: None,
             access_key_id,
             secret_access_key,
         },
@@ -60,6 +61,7 @@ async fn test_s3_serve_and_migrate_between_buckets_minio() {
         cfg.storage_backend = "s3".into();
         cfg.s3_endpoint = Some(endpoint.clone());
         cfg.s3_region = region.clone();
+        cfg.s3_bucket = Some(src_bucket.clone());
         cfg.s3_access_key_id = Some(access_key_id.clone());
         cfg.s3_secret_access_key = Some(secret_access_key.clone());
     })
@@ -134,6 +136,31 @@ async fn test_s3_serve_and_migrate_between_buckets_minio() {
         .await;
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), master_playlist);
+
+    // Serve a variant playlist with an explicit bucket prefix.
+    let response = server
+        .get_with_auth(
+            &client,
+            &format!("/videos/{src_bucket}/480/{job_id}.m3u8"),
+            &token,
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), variant_playlist);
+
+    // Legacy read path without bucket should use s3_bucket default.
+    let response = server
+        .get_with_auth(&client, &format!("/videos/{job_id}.m3u8"), &token)
+        .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), master_playlist);
+
+    // Legacy read path with a width prefix should also use s3_bucket default.
+    let response = server
+        .get_with_auth(&client, &format!("/videos/480/{job_id}.m3u8"), &token)
+        .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), variant_playlist);
 
     // Migrate only 480p + master prefixes.
     let request = MigrateRequest {

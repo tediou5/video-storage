@@ -301,22 +301,12 @@ fn validate_bucket_for_write(bucket: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn split_bucket_and_key(filename: &str, is_s3: bool) -> Result<(Option<&str>, &str), &'static str> {
-    if is_s3 {
-        let Some((bucket, key)) = filename.split_once('/') else {
-            return Err("Missing bucket in /videos path");
-        };
-        if bucket.is_empty() || key.is_empty() {
-            return Err("Invalid /videos path");
-        }
-        return Ok((Some(bucket), key));
-    }
-
+fn split_bucket_and_key(filename: &str) -> Result<(Option<&str>, &str), &'static str> {
     let Some((first, rest)) = filename.split_once('/') else {
         return Ok((None, filename));
     };
 
-    // Local backend:
+    // Path parsing:
     // - Keep legacy layout: `720/<file>` (first segment is numeric width)
     // - Allow bucket-prefixed paths: `<bucket>/<key>` by stripping the first segment
     if first.chars().all(|c| c.is_ascii_digit()) {
@@ -326,6 +316,13 @@ fn split_bucket_and_key(filename: &str, is_s3: bool) -> Result<(Option<&str>, &s
     } else {
         Ok((Some(first), rest))
     }
+}
+
+fn choose_bucket_for_s3<'a>(
+    bucket_prefix: Option<&'a str>,
+    default_bucket: Option<&'a str>,
+) -> Result<&'a str, &'static str> {
+    bucket_prefix.or(default_bucket).ok_or("Missing bucket")
 }
 
 fn extract_job_id_from_key(key: &str) -> Result<&str, &'static str> {
@@ -355,15 +352,31 @@ pub async fn serve_video(
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
     let is_s3 = state.storage_manager.is_s3();
-    let (bucket_prefix, key) = match split_bucket_and_key(&filename, is_s3) {
+    let (bucket_prefix, key) = match split_bucket_and_key(&filename) {
         Ok(v) => v,
         Err(msg) => return Ok(err_response(StatusCode::BAD_REQUEST, msg)),
     };
 
+    let mut bucket_for_log: Option<&str> = bucket_prefix;
+
     let operator = if is_s3 {
-        let Some(bucket_name) = bucket_prefix else {
-            return Ok(err_response(StatusCode::BAD_REQUEST, "Missing bucket"));
+        let default_bucket = state.storage_manager.default_bucket();
+        let bucket_name = match choose_bucket_for_s3(bucket_prefix, default_bucket) {
+            Ok(v) => v,
+            Err(msg) => return Ok(err_response(StatusCode::BAD_REQUEST, msg)),
         };
+        bucket_for_log = Some(bucket_name);
+
+        if bucket_prefix.is_none()
+            && let Some(default_bucket) = default_bucket
+        {
+            warn!(
+                filename = %key,
+                bucket = %default_bucket,
+                "Serving /videos legacy path using default S3 bucket"
+            );
+        }
+
         match state.storage_manager.operator_for_bucket(bucket_name) {
             Ok(op) => Some(op),
             Err(error) => {
@@ -389,7 +402,7 @@ pub async fn serve_video(
     debug!(
         %job_id,
         filename = %key,
-        bucket = bucket_prefix.unwrap_or(""),
+        bucket = bucket_for_log.unwrap_or(""),
         ?local_path,
         ?s3_key,
         "Request server file"
@@ -1016,30 +1029,34 @@ mod tests {
     #[test]
     fn test_split_bucket_and_key_local_legacy_and_bucket_prefixed() {
         assert_eq!(
-            split_bucket_and_key("test_video.m3u8", false).unwrap(),
+            split_bucket_and_key("test_video.m3u8").unwrap(),
             (None, "test_video.m3u8")
         );
         assert_eq!(
-            split_bucket_and_key("720/test_video.m3u8", false).unwrap(),
+            split_bucket_and_key("720/test_video.m3u8").unwrap(),
             (None, "720/test_video.m3u8")
         );
         assert_eq!(
-            split_bucket_and_key("mybucket/test_video.m3u8", false).unwrap(),
+            split_bucket_and_key("mybucket/test_video.m3u8").unwrap(),
             (Some("mybucket"), "test_video.m3u8")
         );
         assert_eq!(
-            split_bucket_and_key("mybucket/720/test_video.m3u8", false).unwrap(),
+            split_bucket_and_key("mybucket/720/test_video.m3u8").unwrap(),
             (Some("mybucket"), "720/test_video.m3u8")
         );
     }
 
     #[test]
-    fn test_split_bucket_and_key_s3_requires_bucket() {
-        assert!(split_bucket_and_key("test_video.m3u8", true).is_err());
+    fn test_choose_bucket_for_s3() {
         assert_eq!(
-            split_bucket_and_key("mybucket/test_video.m3u8", true).unwrap(),
-            (Some("mybucket"), "test_video.m3u8")
+            choose_bucket_for_s3(Some("mybucket"), Some("default")).unwrap(),
+            "mybucket"
         );
+        assert_eq!(
+            choose_bucket_for_s3(None, Some("default")).unwrap(),
+            "default"
+        );
+        assert!(choose_bucket_for_s3(None, None).is_err());
     }
 
     #[test]
@@ -1083,6 +1100,7 @@ mod tests {
             backend: StorageBackend::S3 {
                 endpoint: Some("http://127.0.0.1:9000".into()),
                 region: Some("us-east-1".into()),
+                default_bucket: None,
                 access_key_id: "minioadmin".into(),
                 secret_access_key: "minioadmin".into(),
             },
@@ -1127,6 +1145,7 @@ mod tests {
             backend: StorageBackend::S3 {
                 endpoint: Some("http://127.0.0.1:9000".into()),
                 region: Some("us-east-1".into()),
+                default_bucket: None,
                 access_key_id: "minioadmin".into(),
                 secret_access_key: "minioadmin".into(),
             },
@@ -1207,6 +1226,7 @@ mod tests {
             backend: StorageBackend::S3 {
                 endpoint: Some("http://127.0.0.1:9000".into()),
                 region: Some("us-east-1".into()),
+                default_bucket: None,
                 access_key_id: "minioadmin".into(),
                 secret_access_key: "minioadmin".into(),
             },

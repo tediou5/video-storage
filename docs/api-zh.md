@@ -271,6 +271,7 @@ curl -X POST http://localhost:32146/migrate \
 
 > 说明：
 > - 在 `storage_backend = "s3"` 时，必须显式带上 `bucket`，服务会按 bucket 读取对象存储。
+> - 兼容模式：如果配置了 `s3_bucket`（或启动参数 `--s3-bucket` / 环境变量 `S3_BUCKET`），则也允许 legacy 路径 `GET /videos/{key}` 或 `GET /videos/{width}/{key}`，此时会使用默认桶读取。
 > - 在 `storage_backend = "local"` 时，`bucket` 会被忽略（但建议统一带上，便于未来切换到 S3）。
 
 #### 路径参数
@@ -491,6 +492,7 @@ workspace = "./data"
 storage_backend = "s3"
 s3_endpoint = "http://localhost:9000"  # MinIO 或自定义 S3
 s3_region = "us-east-1"
+s3_bucket = "my-bucket"               # 可选：用于 legacy /videos/<key> 读取的默认桶
 s3_access_key_id = "minioadmin"
 s3_secret_access_key = "minioadmin"
 ```

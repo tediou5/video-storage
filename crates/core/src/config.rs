@@ -24,6 +24,7 @@ use std::path::Path;
 /// # S3 configuration (required when storage_backend = "s3")
 /// s3_endpoint = "http://localhost:9000"  # Optional: for MinIO or custom S3
 /// s3_region = "us-east-1"                # Optional
+/// s3_bucket = "video-storage"            # Optional: default bucket for legacy /videos/<key> reads
 /// s3_access_key_id = "minioadmin"
 /// s3_secret_access_key = "minioadmin"
 ///
@@ -69,22 +70,34 @@ pub struct Config {
     pub storage_backend: String,
 
     /// S3 endpoint (for MinIO/custom S3)
-    #[arg(long)]
+    #[arg(long, env = "S3_ENDPOINT")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub s3_endpoint: Option<String>,
 
     /// S3 region
-    #[arg(long)]
+    #[arg(long, env = "AWS_REGION")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub s3_region: Option<String>,
 
+    /// Default bucket for legacy reads in S3 mode.
+    ///
+    /// When storage_backend = "s3", external playback normally uses:
+    /// - GET /videos/<bucket>/<key>
+    ///
+    /// If this value is set, legacy paths without bucket are also accepted:
+    /// - GET /videos/<key>
+    /// - GET /videos/<width>/<key>
+    #[arg(long = "s3-bucket", env = "S3_BUCKET")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_bucket: Option<String>,
+
     /// S3 access key ID
-    #[arg(long)]
+    #[arg(long, env = "AWS_ACCESS_KEY_ID")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub s3_access_key_id: Option<String>,
 
     /// S3 secret access key
-    #[arg(long)]
+    #[arg(long, env = "AWS_SECRET_ACCESS_KEY")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub s3_secret_access_key: Option<String>,
 
@@ -179,12 +192,17 @@ impl Default for Config {
             storage_backend: default_storage_backend(),
             s3_endpoint: None,
             s3_region: None,
+            s3_bucket: None,
             s3_access_key_id: None,
             s3_secret_access_key: None,
             webhook_url: None,
             claim_keys: Vec::new(),
         }
     }
+}
+
+fn is_pure_ascii_digits(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
 }
 
 impl Config {
@@ -249,6 +267,9 @@ impl Config {
         if self.s3_region.is_none() {
             self.s3_region = file_config.s3_region;
         }
+        if self.s3_bucket.is_none() {
+            self.s3_bucket = file_config.s3_bucket;
+        }
         if self.s3_access_key_id.is_none() {
             self.s3_access_key_id = file_config.s3_access_key_id;
         }
@@ -274,6 +295,20 @@ impl Config {
                 // Local storage doesn't need additional validation
             }
             "s3" => {
+                if let Some(bucket) = self.s3_bucket.as_deref() {
+                    if bucket.is_empty() {
+                        return Err(anyhow::anyhow!("S3 bucket cannot be empty"));
+                    }
+                    if bucket.contains('/') {
+                        return Err(anyhow::anyhow!("S3 bucket must not contain '/'"));
+                    }
+                    if is_pure_ascii_digits(bucket) {
+                        return Err(anyhow::anyhow!(
+                            "S3 bucket must not be numeric-only (e.g. '123')"
+                        ));
+                    }
+                }
+
                 if self
                     .s3_access_key_id
                     .as_ref()
@@ -327,6 +362,7 @@ impl Config {
         Some(S3Config {
             endpoint: self.s3_endpoint.clone(),
             region: self.s3_region.clone(),
+            bucket: self.s3_bucket.clone(),
             access_key_id: self.s3_access_key_id.clone()?,
             secret_access_key: self.s3_secret_access_key.clone()?,
         })
@@ -345,6 +381,7 @@ impl Config {
 pub struct S3Config {
     pub endpoint: Option<String>,
     pub region: Option<String>,
+    pub bucket: Option<String>,
     pub access_key_id: String,
     pub secret_access_key: String,
 }
@@ -523,5 +560,41 @@ mod tests {
         let config = Config::from_file(file.path()).unwrap();
 
         assert_eq!(config.permits, MIN_PERMITS);
+    }
+
+    #[test]
+    fn test_config_merge_preserves_cli_s3_bucket() {
+        let file_config = Config {
+            storage_backend: "s3".into(),
+            s3_bucket: Some("file-bucket".into()),
+            s3_access_key_id: Some("ak".into()),
+            s3_secret_access_key: Some("sk".into()),
+            ..Default::default()
+        };
+
+        let cli_config = Config {
+            storage_backend: "s3".into(),
+            s3_bucket: Some("cli-bucket".into()),
+            s3_access_key_id: Some("ak".into()),
+            s3_secret_access_key: Some("sk".into()),
+            ..Default::default()
+        };
+
+        let merged = cli_config.merge_with_file(file_config);
+        assert_eq!(merged.s3_bucket.as_deref(), Some("cli-bucket"));
+    }
+
+    #[test]
+    fn test_validate_rejects_numeric_only_default_s3_bucket() {
+        let cfg = Config {
+            storage_backend: "s3".into(),
+            s3_bucket: Some("123".into()),
+            s3_access_key_id: Some("ak".into()),
+            s3_secret_access_key: Some("sk".into()),
+            ..Default::default()
+        };
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("numeric-only"), "err={err}");
     }
 }
