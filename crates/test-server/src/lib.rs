@@ -46,10 +46,24 @@ impl TestServer {
             .await
     }
 
+    /// Start an unshared server instance with a custom config mutator.
+    ///
+    /// This is intended for optional tests (e.g. S3/MinIO) that need a different backend.
+    pub async fn start_with_config(mutate: impl FnOnce(&mut Config)) -> Self {
+        Self::start_with_webhook_and_config("", mutate).await
+    }
+
     /// Start the server with webhook URL (private)
     async fn start_with_webhook(webhook_url: &str) -> Self {
-        // Only open when debugging
-        tracing_subscriber::fmt::init();
+        Self::start_with_webhook_and_config(webhook_url, |_| {}).await
+    }
+
+    async fn start_with_webhook_and_config(
+        webhook_url: &str,
+        mutate: impl FnOnce(&mut Config),
+    ) -> Self {
+        // Only open when debugging; don't panic if already initialized by other tests.
+        _ = tracing_subscriber::fmt::try_init();
 
         // Initialize ffmpeg once
         static FFMPEG_INIT: std::sync::Once = std::sync::Once::new();
@@ -71,7 +85,7 @@ impl TestServer {
         // Clean up existing workspace
         let _ = tokio::fs::remove_dir_all(&workspace).await;
 
-        let config = Config {
+        let mut config = Config {
             listen_on_port: e_port,
             internal_port: i_port,
             workspace: workspace.clone(),
@@ -82,6 +96,8 @@ impl TestServer {
             },
             ..Default::default()
         };
+
+        mutate(&mut config);
 
         // Spawn the server in a separate thread with its own runtime
         let handle = std::thread::spawn(move || {

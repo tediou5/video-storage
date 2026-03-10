@@ -4,6 +4,8 @@ use std::time::UNIX_EPOCH;
 use tokio::time::sleep;
 use video_storage_test_server::{CreateClaimRequest, CreateClaimResponse, TestServer};
 
+const TEST_BUCKET: &str = "testbucket";
+
 #[tokio::test]
 async fn test_server_starts_successfully() {
     let server = TestServer::shared().await;
@@ -26,13 +28,16 @@ async fn test_no_auth_fails() {
 
     // Request from internal URL should fail
     let response = server
-        .get_without_auth(&client, "/videos/test_video.m3u8")
+        .get_without_auth(&client, &format!("/videos/{TEST_BUCKET}/test_video.m3u8"))
         .await;
     assert_eq!(response.status(), 404);
 
     // Request without Authorization header should fail
     let response = client
-        .get(format!("{}/videos/test_video.m3u8", server.ext_url()))
+        .get(format!(
+            "{}/videos/{TEST_BUCKET}/test_video.m3u8",
+            server.ext_url()
+        ))
         .send()
         .await
         .unwrap();
@@ -40,7 +45,10 @@ async fn test_no_auth_fails() {
 
     // Request with invalid Authorization header should fail
     let response = client
-        .get(format!("{}/videos/test_video.m3u8", server.ext_url()))
+        .get(format!(
+            "{}/videos/{TEST_BUCKET}/test_video.m3u8",
+            server.ext_url()
+        ))
         .header("Authorization", "InvalidToken")
         .send()
         .await
@@ -61,7 +69,11 @@ async fn test_valid_auth_succeeds() {
 
     // Request with valid token should succeed (would return NOT_FOUND since file doesn't exist)
     let response = server
-        .get_with_auth(&client, "/videos/test_video.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/test_video.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 }
@@ -79,7 +91,11 @@ async fn test_asset_id_mismatch() {
 
     // Try to access video2 with video1's token
     let response = server
-        .get_with_auth(&client, "/videos/video2.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/video2.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 403);
 }
@@ -99,7 +115,11 @@ async fn test_expired_token() {
 
     // Request with expired token should fail
     let response = server
-        .get_with_auth(&client, "/videos/test_video.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/test_video.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 401);
 }
@@ -117,19 +137,31 @@ async fn test_width_restrictions() {
 
     // Accessing allowed width should succeed (would return NOT_FOUND since file doesn't exist)
     let response = server
-        .get_with_auth(&client, "/videos/720/test_video.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/720/test_video.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 
     // Accessing disallowed width should fail
     let response = server
-        .get_with_auth(&client, "/videos/1920/test_video.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/1920/test_video.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 403);
 
     // Master playlist (no width) should always be allowed
     let response = server
-        .get_with_auth(&client, "/videos/test_video.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/test_video.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 }
@@ -150,7 +182,7 @@ async fn test_empty_allowed_widths_allows_all() {
         let response = server
             .get_with_auth(
                 &client,
-                &format!("/videos/{}/test_video.m3u8", width),
+                &format!("/videos/{TEST_BUCKET}/{}/test_video.m3u8", width),
                 &token,
             )
             .await;
@@ -191,13 +223,21 @@ async fn test_time_window_for_segments() {
 
     // Segment 20 should be allowed (within 30 segment window)
     let response = server
-        .get_with_auth(&client, "/videos/test_video-020.m4s", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/test_video-020.m4s"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 
     // Segment 40 should be denied (outside 30 segment window)
     let response = server
-        .get_with_auth(&client, "/videos/test_video-040.m4s", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/test_video-040.m4s"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 403);
 }
@@ -209,7 +249,10 @@ async fn test_invalid_claim_token() {
 
     // Test with malformed token
     let response = client
-        .get(format!("{}/videos/test_video.m3u8", server.ext_url()))
+        .get(format!(
+            "{}/videos/{TEST_BUCKET}/test_video.m3u8",
+            server.ext_url()
+        ))
         .header("Authorization", "Bearer invalid_base64_token!!!")
         .send()
         .await
@@ -218,7 +261,10 @@ async fn test_invalid_claim_token() {
 
     // Test with random base64 token
     let response = client
-        .get(format!("{}/videos/test_video.m3u8", server.ext_url()))
+        .get(format!(
+            "{}/videos/{TEST_BUCKET}/test_video.m3u8",
+            server.ext_url()
+        ))
         .header("Authorization", "Bearer YmFkX3Rva2Vu") // "bad_token" in base64
         .send()
         .await
@@ -239,19 +285,31 @@ async fn test_width_restrictions_with_segments() {
 
     // Init segment with allowed width should pass
     let response = server
-        .get_with_auth(&client, "/videos/720/test_video-init.mp4", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/720/test_video-init.mp4"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 
     // Video segment with allowed width should pass
     let response = server
-        .get_with_auth(&client, "/videos/720/test_video-001.m4s", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/720/test_video-001.m4s"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 
     // Video segment with disallowed width should fail
     let response = server
-        .get_with_auth(&client, "/videos/1080/test_video-001.m4s", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/1080/test_video-001.m4s"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 403);
 }
@@ -266,13 +324,14 @@ async fn test_h265_paths_strip_codec_suffix() {
         .await
         .expect("Failed to create claim");
 
-    for path in [
-        "/videos/test_video-h265.m3u8",
-        "/videos/720/test_video-h265.m3u8",
-        "/videos/720/test_video-h265-init.mp4",
-        "/videos/720/test_video-h265-001.m4s",
-    ] {
-        let response = server.get_with_auth(&client, path, &token).await;
+    let paths = vec![
+        format!("/videos/{TEST_BUCKET}/test_video-h265.m3u8"),
+        format!("/videos/{TEST_BUCKET}/720/test_video-h265.m3u8"),
+        format!("/videos/{TEST_BUCKET}/720/test_video-h265-init.mp4"),
+        format!("/videos/{TEST_BUCKET}/720/test_video-h265-001.m4s"),
+    ];
+    for path in paths {
+        let response = server.get_with_auth(&client, &path, &token).await;
         assert_eq!(response.status(), 404, "expected 404 for {}", path);
     }
 }
@@ -293,7 +352,7 @@ async fn test_multiple_width_restrictions() {
         let response = server
             .get_with_auth(
                 &client,
-                &format!("/videos/{}/test_video.m3u8", width),
+                &format!("/videos/{TEST_BUCKET}/{}/test_video.m3u8", width),
                 &token,
             )
             .await;
@@ -305,7 +364,7 @@ async fn test_multiple_width_restrictions() {
         let response = server
             .get_with_auth(
                 &client,
-                &format!("/videos/{}/test_video.m3u8", width),
+                &format!("/videos/{TEST_BUCKET}/{}/test_video.m3u8", width),
                 &token,
             )
             .await;
@@ -333,7 +392,10 @@ async fn test_concurrent_requests() {
         let client_c = client.clone();
         let handle = tokio::spawn(async move {
             let response = client_c
-                .get(format!("{}/videos/test_video-{:03}.m4s", base_url, i))
+                .get(format!(
+                    "{}/videos/{TEST_BUCKET}/test_video-{:03}.m4s",
+                    base_url, i
+                ))
                 .header("Authorization", format!("Bearer {}", token_clone))
                 .send()
                 .await
@@ -482,14 +544,22 @@ async fn test_v2_claim_creation_and_auth() {
     // Test that all included assets are accessible
     for asset_id in &["video1", "video2", "video3"] {
         let response = server
-            .get_with_auth(&client, &format!("/videos/{}.m3u8", asset_id), &token)
+            .get_with_auth(
+                &client,
+                &format!("/videos/{TEST_BUCKET}/{}.m3u8", asset_id),
+                &token,
+            )
             .await;
         assert_eq!(response.status(), 404); // File doesn't exist but auth passes
     }
 
     // Test that non-included assets are rejected
     let response = server
-        .get_with_auth(&client, "/videos/video4.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/video4.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 403);
 }
@@ -508,13 +578,21 @@ async fn test_v2_claim_single_asset_in_list() {
 
     // Should work for the included asset
     let response = server
-        .get_with_auth(&client, "/videos/single_video.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/single_video.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 
     // Should reject other assets
     let response = server
-        .get_with_auth(&client, "/videos/other_video.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/other_video.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 403);
 }
@@ -536,7 +614,7 @@ async fn test_v2_claim_with_width_restrictions() {
         let response = server
             .get_with_auth(
                 &client,
-                &format!("/videos/{}/test_video.m3u8", width),
+                &format!("/videos/{TEST_BUCKET}/{}/test_video.m3u8", width),
                 &token,
             )
             .await;
@@ -545,13 +623,21 @@ async fn test_v2_claim_with_width_restrictions() {
 
     // Test disallowed width
     let response = server
-        .get_with_auth(&client, "/videos/1920/test_video.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/1920/test_video.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 403);
 
     // Master playlist (no width) should be allowed
     let response = server
-        .get_with_auth(&client, "/videos/test_video.m3u8", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/test_video.m3u8"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 }
@@ -570,24 +656,40 @@ async fn test_v2_claim_segments_and_widths() {
 
     // Test segments with correct width for included assets
     let response = server
-        .get_with_auth(&client, "/videos/480/video_a-001.m4s", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/480/video_a-001.m4s"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 
     let response = server
-        .get_with_auth(&client, "/videos/480/video_b-init.mp4", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/480/video_b-init.mp4"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 404);
 
     // Test segments with wrong width
     let response = server
-        .get_with_auth(&client, "/videos/720/video_a-001.m4s", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/720/video_a-001.m4s"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 403);
 
     // Test segments for non-included asset
     let response = server
-        .get_with_auth(&client, "/videos/480/video_c-001.m4s", &token)
+        .get_with_auth(
+            &client,
+            &format!("/videos/{TEST_BUCKET}/480/video_c-001.m4s"),
+            &token,
+        )
         .await;
     assert_eq!(response.status(), 403);
 }
@@ -626,12 +728,20 @@ async fn test_v2_claim_time_window_validation() {
     // Both assets should work within time window for allowed segments
     for asset_id in &["video1", "video2"] {
         let response = server
-            .get_with_auth(&client, &format!("/videos/{}-020.m4s", asset_id), &token)
+            .get_with_auth(
+                &client,
+                &format!("/videos/{TEST_BUCKET}/{}-020.m4s", asset_id),
+                &token,
+            )
             .await;
         assert_eq!(response.status(), 404); // Within window
 
         let response = server
-            .get_with_auth(&client, &format!("/videos/{}-040.m4s", asset_id), &token)
+            .get_with_auth(
+                &client,
+                &format!("/videos/{TEST_BUCKET}/{}-040.m4s", asset_id),
+                &token,
+            )
             .await;
         assert_eq!(response.status(), 403); // Outside window
     }
@@ -692,7 +802,10 @@ async fn test_v2_claim_concurrent_requests() {
 
         let handle = tokio::spawn(async move {
             let response = client_c
-                .get(format!("{}/videos/{}-{:03}.m4s", base_url, asset_id, i))
+                .get(format!(
+                    "{}/videos/{TEST_BUCKET}/{}-{:03}.m4s",
+                    base_url, asset_id, i
+                ))
                 .header("Authorization", format!("Bearer {}", token_clone))
                 .send()
                 .await

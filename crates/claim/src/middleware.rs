@@ -102,19 +102,22 @@ fn remove_codec_suffix(asset_id: &str) -> &str {
 /// Supports formats:
 /// - {asset_id}.m3u8 (master playlist)
 /// - {width}/{asset_id}.m3u8 (resolution playlist)
+/// - {bucket}/{asset_id}.m3u8 (bucket-prefixed master playlist)
+/// - {bucket}/{width}/{asset_id}.m3u8 (bucket-prefixed resolution playlist)
 /// - {width}/{asset_id}-{segment}.m4s (video segment)
 /// - {width}/{asset_id}-init.mp4 (init segment)
 fn parse_video_filename(filename: &str) -> Option<(String, Option<u32>, Option<u16>)> {
     // Split by path separator first
     let parts: Vec<&str> = filename.split('/').collect();
 
-    let (file_part, width) = if parts.len() == 2 {
-        // Format: {width}/{filename}
-        let width = parts[0].parse::<u16>().ok();
-        (parts[1], width)
-    } else {
+    let (file_part, width) = match parts.as_slice() {
         // Format: {filename}
-        (parts[0], None)
+        [file] => (*file, None),
+        // Format: {width}/{filename} OR {bucket}/{filename}
+        [first, file] => (*file, first.parse::<u16>().ok()),
+        // Format: {bucket}/{width}/{filename}
+        [_bucket, width, file] => (*file, width.parse::<u16>().ok()),
+        _ => return None,
     };
 
     // Check for master playlist
@@ -160,8 +163,20 @@ mod tests {
         assert_eq!(seg, None);
         assert_eq!(width, None);
 
+        // Bucket-prefixed master playlist
+        let (asset_id, seg, width) = parse_video_filename("mybucket/video123.m3u8").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, None);
+        assert_eq!(width, None);
+
         // Resolution playlist
         let (asset_id, seg, width) = parse_video_filename("720/video123.m3u8").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, None);
+        assert_eq!(width, Some(720));
+
+        // Bucket-prefixed resolution playlist
+        let (asset_id, seg, width) = parse_video_filename("mybucket/720/video123.m3u8").unwrap();
         assert_eq!(asset_id, "video123");
         assert_eq!(seg, None);
         assert_eq!(width, Some(720));
@@ -172,8 +187,21 @@ mod tests {
         assert_eq!(seg, Some(0));
         assert_eq!(width, Some(720));
 
+        // Bucket-prefixed init segment
+        let (asset_id, seg, width) =
+            parse_video_filename("mybucket/720/video123-init.mp4").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, Some(0));
+        assert_eq!(width, Some(720));
+
         // Video segment
         let (asset_id, seg, width) = parse_video_filename("720/video123-005.m4s").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, Some(5));
+        assert_eq!(width, Some(720));
+
+        // Bucket-prefixed video segment
+        let (asset_id, seg, width) = parse_video_filename("mybucket/720/video123-005.m4s").unwrap();
         assert_eq!(asset_id, "video123");
         assert_eq!(seg, Some(5));
         assert_eq!(width, Some(720));
@@ -184,8 +212,21 @@ mod tests {
         assert_eq!(seg, None);
         assert_eq!(width, None);
 
+        // Bucket-prefixed H265 master playlist
+        let (asset_id, seg, width) = parse_video_filename("mybucket/video123-h265.m3u8").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, None);
+        assert_eq!(width, None);
+
         // H265 resolution playlist
         let (asset_id, seg, width) = parse_video_filename("720/video123-h265.m3u8").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, None);
+        assert_eq!(width, Some(720));
+
+        // Bucket-prefixed H265 resolution playlist
+        let (asset_id, seg, width) =
+            parse_video_filename("mybucket/720/video123-h265.m3u8").unwrap();
         assert_eq!(asset_id, "video123");
         assert_eq!(seg, None);
         assert_eq!(width, Some(720));
@@ -196,8 +237,22 @@ mod tests {
         assert_eq!(seg, Some(0));
         assert_eq!(width, Some(720));
 
+        // Bucket-prefixed H265 init segment
+        let (asset_id, seg, width) =
+            parse_video_filename("mybucket/720/video123-h265-init.mp4").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, Some(0));
+        assert_eq!(width, Some(720));
+
         // H265 video segment
         let (asset_id, seg, width) = parse_video_filename("720/video123-h265-005.m4s").unwrap();
+        assert_eq!(asset_id, "video123");
+        assert_eq!(seg, Some(5));
+        assert_eq!(width, Some(720));
+
+        // Bucket-prefixed H265 video segment
+        let (asset_id, seg, width) =
+            parse_video_filename("mybucket/720/video123-h265-005.m4s").unwrap();
         assert_eq!(asset_id, "video123");
         assert_eq!(seg, Some(5));
         assert_eq!(width, Some(720));

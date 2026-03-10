@@ -21,7 +21,9 @@ use tracing::info;
 //
 // Re-export
 //
-pub use api::{create_claim, log_request_errors, serve_video, upload_mp4_raw, waitlist};
+pub use api::{
+    create_claim, log_request_errors, migrate_videos, serve_video, upload_mp4_raw, waitlist,
+};
 pub use app_state::AppState;
 pub use config::Config;
 pub use job::{ConvertJob, Job, JobResult, UploadJob};
@@ -52,7 +54,6 @@ pub async fn run(config: Config) {
                 .to_s3_config()
                 .expect("S3 configuration is required when using S3 backend");
             StorageBackend::S3 {
-                bucket: s3_config.bucket,
                 endpoint: s3_config.endpoint,
                 region: s3_config.region,
                 access_key_id: s3_config.access_key_id,
@@ -111,6 +112,7 @@ pub async fn run(config: Config) {
     let internal_app = Router::new()
         .route("/claims", post(create_claim))
         .route("/upload", post(upload_mp4_raw))
+        .route("/migrate", post(migrate_videos))
         .route("/waitlist", get(waitlist))
         .route("/videos/{*filename}", get(serve_video))
         .layer(axum::middleware::from_fn(api::log_request_errors))

@@ -15,7 +15,7 @@ sequenceDiagram
     Up->>VS: POST /claims {assets, window, limits}
     VS-->>Up: {token_b64url}
     Up-->>P: 下发 token
-    P->>VS: GET /videos/<asset>-xxx.m4s + Authorization: Bearer <token>
+    P->>VS: GET /videos/<bucket>/<asset>-xxx.m4s + Authorization: Bearer <token>
     VS->>VS: 解码→解密→校验→限速
     VS-->>P: 200/401/403
 ```

@@ -131,8 +131,6 @@ Options:
           Configuration file path (overrides all other arguments)
   -s, --storage-backend <STORAGE_BACKEND>
           Storage backend: local or s3 [default: local]
-      --s3-bucket <S3_BUCKET>
-          S3 bucket name (required when storage-backend is s3)
       --s3-endpoint <S3_ENDPOINT>
           S3 endpoint (for MinIO/custom S3)
       --s3-region <S3_REGION>
@@ -172,13 +170,18 @@ cargo build --release
 ```shell
 video-storage -p 1 \
   -s s3 \
-  --s3-bucket video-storage \
   --s3-endpoint http://127.0.0.1:9000 \
   --s3-region us-east-1 \
   --s3-access-key-id minioadmin \
   --s3-secret-access-key minioadmin \
   --webhook-url https://example.com/webhook
 ```
+
+When `storage_backend = "s3"`, the bucket is selected per request/job:
+- Upload/convert: pass `dst_bucket` in the `/upload` query string (e.g. `/upload?...&dst_bucket=my-bucket`)
+- Playback: request via `/videos/<bucket>/<key>` (e.g. `/videos/my-bucket/720/<job_id>.m3u8`)
+- Migrate between buckets (internal API): `POST /migrate {src_bucket, dst_bucket, job_id, ...}`
+- Note: `dst_bucket` must not be numeric-only (e.g. `123`).
 
 ### Using configuration file
 
@@ -209,7 +212,6 @@ workspace = "./data"
 storage_backend = "s3"  # Options: "local" or "s3"
 
 # S3 configuration (required when storage_backend = "s3")
-s3_bucket = "video-storage"
 s3_endpoint = "http://127.0.0.1:9000"
 s3_region = "us-east-1"
 s3_access_key_id = "minioadmin"
@@ -241,7 +243,7 @@ Returns JSON with pending job counts.
 example:
 
 ```shell
-curl -X GET http://127.0.0.1:32145/waitlist
+curl -X GET http://127.0.0.1:32146/waitlist
 ```
 
 response:
@@ -257,7 +259,9 @@ response:
 ## Upload video
 
 ```shell
-curl -X POST "http://0.0.0.0:32145/upload?id=video&crf=48" --data-binary @video.mp4 -H "Content-Type: application/octet-stream"
+curl -X POST "http://127.0.0.1:32146/upload?id=video&crf=48" \
+  --data-binary @video.mp4 \
+  -H "Content-Type: application/octet-stream"
 ```
 
 - id: not contain ' ', '-', '/', '.' and not exist
@@ -266,7 +270,8 @@ curl -X POST "http://0.0.0.0:32145/upload?id=video&crf=48" --data-binary @video.
 ## Get resource
 
 ```shell
-http://127.0.0.1:32145/videos/video.m3u8
+curl -H "Authorization: Bearer YOUR_CLAIM_TOKEN" \
+  http://127.0.0.1:32145/videos/my-bucket/video.m3u8
 ```
 
 ## Authentication and Authorization
@@ -319,12 +324,12 @@ Parameters:
 Include the claim token in the Authorization header:
 
 ```shell
-curl -X GET http://127.0.0.1:32145/videos/1920/video123.m3u8 \
+curl -X GET http://127.0.0.1:32145/videos/my-bucket/480/video123.m3u8 \
   -H "Authorization: Bearer YOUR_CLAIM_TOKEN"
 ```
 
 The service will validate:
 1. The token is valid and not expired
 2. The requested asset matches the claim's asset_id
-3. The requested width (1920 in this example) is in the allowed_widths list
+3. The requested width (480 in this example) is in the allowed_widths list
 4. The request is within bandwidth and concurrency limits

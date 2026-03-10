@@ -11,11 +11,9 @@ use objc::sel_impl;
 
 pub fn get_avfoundation_devices(media_type: &str) -> crate::error::Result<Vec<String>> {
     let option = Class::get("AVCaptureDevice");
-    if let None = option {
+    let Some(av_capture_device_class) = option else {
         return Err(AVCaptureDeviceNotFound.into());
-    }
-
-    let av_capture_device_class = option.unwrap();
+    };
 
     // Convert media type to CFString
     let media_type_cf = CFString::new(media_type);

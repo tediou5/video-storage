@@ -6,14 +6,18 @@ use axum::http::{HeaderValue, Request, Response, StatusCode, header};
 use axum::response::{IntoResponse, Json};
 use bytes::Bytes;
 use futures::StreamExt;
+use opendal::EntryMode;
 use opendal::Operator;
+use opendal::options;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::ffi::OsStr;
 use std::io::Error as IoError;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncSeekExt;
+use tokio_util::compat::{FuturesAsyncReadCompatExt as _, FuturesAsyncWriteCompatExt as _};
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, warn};
 use video_storage_claim::create_request::AssetsFilter;
@@ -32,6 +36,34 @@ pub struct WaitlistResponse {
     pub pending_convert_jobs: usize,
     pub pending_upload_jobs: usize,
     pub total_pending_jobs: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MigrateResponse {
+    pub job_id: String,
+    pub src_bucket: String,
+    pub dst_bucket: String,
+    pub dry_run: bool,
+    pub objects_total: u64,
+    pub objects_copied: u64,
+    pub bytes_copied: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MigrateRequest {
+    pub job_id: String,
+    pub src_bucket: String,
+    pub dst_bucket: String,
+    #[serde(default)]
+    pub widths: Option<Vec<u16>>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MigrateErrorResponse {
+    pub job_id: String,
+    pub message: String,
 }
 
 /// Validate job ID with basic rules
@@ -84,6 +116,27 @@ pub async fn upload_mp4_raw(
 
     let body = request.into_body();
     let job_id = job.id().to_string();
+
+    if state.storage_manager.is_s3() {
+        let Some(dst_bucket) = job.dst_bucket.as_deref().filter(|b| !b.is_empty()) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(UploadResponse {
+                    job_id,
+                    message: "Missing dst_bucket (required when storage_backend is s3)".into(),
+                }),
+            );
+        };
+        if let Err(message) = validate_bucket_for_write(dst_bucket) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(UploadResponse {
+                    job_id,
+                    message: message.into(),
+                }),
+            );
+        }
+    }
 
     if job.crf > 63 {
         return (
@@ -231,41 +284,118 @@ async fn try_serve_from_s3(
     Ok(stream)
 }
 
+fn is_pure_ascii_digits(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+}
+
+fn validate_bucket_for_write(bucket: &str) -> Result<(), &'static str> {
+    if bucket.is_empty() {
+        return Err("Invalid bucket: empty");
+    }
+    if bucket.contains('/') {
+        return Err("Invalid bucket: contains '/'");
+    }
+    if is_pure_ascii_digits(bucket) {
+        return Err("Invalid bucket: numeric-only bucket is not allowed");
+    }
+    Ok(())
+}
+
+fn split_bucket_and_key(filename: &str, is_s3: bool) -> Result<(Option<&str>, &str), &'static str> {
+    if is_s3 {
+        let Some((bucket, key)) = filename.split_once('/') else {
+            return Err("Missing bucket in /videos path");
+        };
+        if bucket.is_empty() || key.is_empty() {
+            return Err("Invalid /videos path");
+        }
+        return Ok((Some(bucket), key));
+    }
+
+    let Some((first, rest)) = filename.split_once('/') else {
+        return Ok((None, filename));
+    };
+
+    // Local backend:
+    // - Keep legacy layout: `720/<file>` (first segment is numeric width)
+    // - Allow bucket-prefixed paths: `<bucket>/<key>` by stripping the first segment
+    if first.chars().all(|c| c.is_ascii_digit()) {
+        Ok((None, filename))
+    } else if rest.is_empty() {
+        Err("Invalid /videos path")
+    } else {
+        Ok((Some(first), rest))
+    }
+}
+
+fn extract_job_id_from_key(key: &str) -> Result<&str, &'static str> {
+    let path_and_suffix = key.split('.').collect::<Vec<_>>();
+    if path_and_suffix.len() != 2 {
+        return Err("Invalid filename");
+    }
+
+    let path = path_and_suffix[0];
+    let vals = path.split('-').collect::<Vec<_>>();
+    if !(1..=3).contains(&vals.len()) {
+        return Err("Invalid filename");
+    }
+
+    let mut job_id = vals[0];
+    if let Some((_h, jid)) = vals[0].split_once('/') {
+        job_id = jid;
+    }
+
+    Ok(job_id)
+}
+
 pub async fn serve_video(
     Extension(state): Extension<AppState>,
     Extension(bucket): Extension<ClaimBucket>,
     AxumPath(filename): AxumPath<String>,
     req: Request<Body>,
 ) -> Result<Response<Body>, Infallible> {
-    let path_and_suffix = filename.split('.').collect::<Vec<_>>();
+    let is_s3 = state.storage_manager.is_s3();
+    let (bucket_prefix, key) = match split_bucket_and_key(&filename, is_s3) {
+        Ok(v) => v,
+        Err(msg) => return Ok(err_response(StatusCode::BAD_REQUEST, msg)),
+    };
 
-    if path_and_suffix.len() != 2 {
-        warn!(%filename, "Invalid filename");
-        return Ok(err_response(StatusCode::BAD_REQUEST, "Invalid filename"));
-    }
+    let operator = if is_s3 {
+        let Some(bucket_name) = bucket_prefix else {
+            return Ok(err_response(StatusCode::BAD_REQUEST, "Missing bucket"));
+        };
+        match state.storage_manager.operator_for_bucket(bucket_name) {
+            Ok(op) => Some(op),
+            Err(error) => {
+                warn!(?error, bucket = %bucket_name, "Invalid bucket");
+                return Ok(err_response(StatusCode::BAD_REQUEST, "Invalid bucket"));
+            }
+        }
+    } else {
+        None
+    };
 
-    let path = path_and_suffix[0];
-
-    let vals = path.split('-').collect::<Vec<_>>();
-
-    let len = vals.len();
-    if !(1..=3).contains(&len) {
-        warn!(%filename, "Invalid filename");
-        return Ok(err_response(StatusCode::BAD_REQUEST, "Invalid filename"));
-    }
-
-    let mut job_id = vals[0];
-
-    if let Some((_h, jid)) = vals[0].split_once("/") {
-        job_id = jid;
+    let job_id = match extract_job_id_from_key(key) {
+        Ok(v) => v,
+        Err(msg) => {
+            warn!(filename = %key, "Invalid filename");
+            return Ok(err_response(StatusCode::BAD_REQUEST, msg));
+        }
     };
 
     // First, try to get file size from local filesystem
-    let local_path = state.videos_dir().join(job_id).join(&filename);
-    let s3_key = format!("videos/{filename}");
-    debug!(%job_id, %filename, ?local_path, ?s3_key, "Request server file");
+    let local_path = state.videos_dir().join(job_id).join(key);
+    let s3_key = format!("videos/{key}");
+    debug!(
+        %job_id,
+        filename = %key,
+        bucket = bucket_prefix.unwrap_or(""),
+        ?local_path,
+        ?s3_key,
+        "Request server file"
+    );
 
-    server_file_with_bucket(state, local_path, s3_key, filename, req, bucket).await
+    server_file_with_bucket(local_path, s3_key, key.to_string(), req, bucket, operator).await
 }
 
 fn parse_range(req: &Request<Body>, file_size: u64) -> (StatusCode, u64, u64) {
@@ -286,16 +416,16 @@ fn parse_range(req: &Request<Body>, file_size: u64) -> (StatusCode, u64, u64) {
 }
 
 async fn server_file_with_bucket(
-    state: AppState,
     local_path: PathBuf,
     s3_key: String,
     filename: String,
     req: Request<Body>,
     bucket: ClaimBucket,
+    operator: Option<Operator>,
 ) -> Result<Response<Body>, Infallible> {
     let maybe_filesize = if let Ok(metadata) = tokio::fs::metadata(&local_path).await {
         Some((metadata.len(), false))
-    } else if let Some(operator) = state.storage_manager.operator() {
+    } else if let Some(operator) = operator.as_ref() {
         // Try to get size from S3
         operator
             .stat(&s3_key)
@@ -314,11 +444,7 @@ async fn server_file_with_bucket(
     let len = end - start + 1;
 
     let maybe_res = if read_from_s3 {
-        let operator = state
-            .storage_manager
-            .operator()
-            .expect("S3 operator should be available for remote storage")
-            .clone();
+        let operator = operator.expect("S3 operator should be available for remote storage");
 
         try_serve_from_s3(s3_key, start, end, operator, bucket.clone())
             .await
@@ -357,6 +483,198 @@ async fn server_file_with_bucket(
         );
     }
     Ok(res)
+}
+
+pub async fn migrate_videos(
+    Extension(state): Extension<AppState>,
+    Json(request): Json<MigrateRequest>,
+) -> impl IntoResponse {
+    let job_id = request.job_id.clone();
+
+    let migrate_err = |status: StatusCode, message: String| {
+        (
+            status,
+            Json(MigrateErrorResponse {
+                job_id: job_id.clone(),
+                message,
+            }),
+        )
+            .into_response()
+    };
+
+    if !state.storage_manager.is_s3() {
+        return migrate_err(StatusCode::BAD_REQUEST, "storage_backend is not s3".into());
+    }
+
+    if !is_valid_job_id(&job_id) {
+        return migrate_err(StatusCode::BAD_REQUEST, "Invalid job ID format".into());
+    }
+
+    if let Err(message) = validate_bucket_for_write(&request.src_bucket) {
+        return migrate_err(
+            StatusCode::BAD_REQUEST,
+            format!("Invalid src_bucket: {message}"),
+        );
+    }
+    if let Err(message) = validate_bucket_for_write(&request.dst_bucket) {
+        return migrate_err(
+            StatusCode::BAD_REQUEST,
+            format!("Invalid dst_bucket: {message}"),
+        );
+    }
+
+    let src_op = match state
+        .storage_manager
+        .operator_for_bucket(&request.src_bucket)
+    {
+        Ok(op) => op,
+        Err(error) => {
+            warn!(?error, bucket = %request.src_bucket, "Invalid src_bucket");
+            return migrate_err(StatusCode::BAD_REQUEST, "Invalid src_bucket".into());
+        }
+    };
+    let dst_op = match state
+        .storage_manager
+        .operator_for_bucket(&request.dst_bucket)
+    {
+        Ok(op) => op,
+        Err(error) => {
+            warn!(?error, bucket = %request.dst_bucket, "Invalid dst_bucket");
+            return migrate_err(StatusCode::BAD_REQUEST, "Invalid dst_bucket".into());
+        }
+    };
+
+    let widths = request.widths.unwrap_or_else(|| {
+        crate::job::convert::RESOLUTIONS
+            .iter()
+            .map(|s| u16::try_from(s.width()).expect("resolution width must fit in u16"))
+            .collect()
+    });
+    let mut prefixes = Vec::with_capacity(widths.len() + 1);
+    prefixes.push(format!("videos/{job_id}"));
+    for w in widths {
+        prefixes.push(format!("videos/{w}/{job_id}"));
+    }
+
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    for prefix in prefixes {
+        let mut lister = match src_op
+            .lister_options(
+                &prefix,
+                options::ListOptions {
+                    recursive: true,
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(lister) => lister,
+            Err(error) => {
+                error!(?error, %prefix, "Failed to list src objects");
+                return migrate_err(StatusCode::INTERNAL_SERVER_ERROR, "List failed".into());
+            }
+        };
+
+        use futures::TryStreamExt as _;
+        while let Some(entry) = match lister.try_next().await {
+            Ok(v) => v,
+            Err(error) => {
+                error!(?error, %prefix, "Failed to iterate src objects");
+                return migrate_err(StatusCode::INTERNAL_SERVER_ERROR, "List failed".into());
+            }
+        } {
+            if entry.metadata().mode() != EntryMode::FILE {
+                continue;
+            }
+            let path = entry.path();
+            let Some(rest) = path.strip_prefix(&prefix) else {
+                continue;
+            };
+            if !(rest.starts_with('.') || rest.starts_with('-')) {
+                continue;
+            }
+            _ = keys.insert(path.to_string());
+        }
+    }
+
+    let mut objects_total = 0u64;
+    let mut objects_copied = 0u64;
+    let mut bytes_copied = 0u64;
+
+    const DELETE_SOURCE_OBJECTS: bool = false;
+
+    for key in keys {
+        objects_total += 1;
+
+        let meta = match src_op.stat(&key).await {
+            Ok(m) => m,
+            Err(error) => {
+                error!(?error, %key, "Failed to stat src object");
+                return migrate_err(StatusCode::INTERNAL_SERVER_ERROR, "Stat failed".into());
+            }
+        };
+
+        let size = meta.content_length();
+        if request.dry_run {
+            bytes_copied += size;
+            objects_copied += 1;
+            continue;
+        }
+
+        let copied = match copy_object_streaming(&src_op, &dst_op, &key, meta.content_type()).await
+        {
+            Ok(v) => v,
+            Err(error) => {
+                error!(?error, %key, "Failed to copy object");
+                return migrate_err(StatusCode::INTERNAL_SERVER_ERROR, "Copy failed".into());
+            }
+        };
+
+        bytes_copied += copied;
+        objects_copied += 1;
+
+        // NOTE: Deletion is intentionally disabled in this release to prevent accidental data loss.
+        if DELETE_SOURCE_OBJECTS && let Err(error) = src_op.delete(&key).await {
+            error!(?error, %key, "Failed to delete src object");
+            return migrate_err(StatusCode::INTERNAL_SERVER_ERROR, "Delete failed".into());
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(MigrateResponse {
+            job_id,
+            src_bucket: request.src_bucket,
+            dst_bucket: request.dst_bucket,
+            dry_run: request.dry_run,
+            objects_total,
+            objects_copied,
+            bytes_copied,
+        }),
+    )
+        .into_response()
+}
+
+async fn copy_object_streaming(
+    src: &Operator,
+    dst: &Operator,
+    key: &str,
+    content_type: Option<&str>,
+) -> anyhow::Result<u64> {
+    let reader = src.reader(key).await?;
+    let mut r = reader.into_futures_async_read(..).await?.compat();
+
+    let mut writer = dst.writer_with(key).chunk(8 * 1024 * 1024).concurrent(8);
+    if let Some(ct) = content_type {
+        writer = writer.content_type(ct);
+    }
+    let mut w = writer.await?.into_futures_async_write().compat_write();
+
+    let copied = tokio::io::copy(&mut r, &mut w).await?;
+    use tokio::io::AsyncWriteExt as _;
+    w.shutdown().await?;
+
+    Ok(copied)
 }
 
 /// Create a new claim token for video access
@@ -693,5 +1011,232 @@ mod tests {
             })
             .expect("job should be enqueued");
         assert_eq!(job_json["codecs"], serde_json::json!(["h265"]));
+    }
+
+    #[test]
+    fn test_split_bucket_and_key_local_legacy_and_bucket_prefixed() {
+        assert_eq!(
+            split_bucket_and_key("test_video.m3u8", false).unwrap(),
+            (None, "test_video.m3u8")
+        );
+        assert_eq!(
+            split_bucket_and_key("720/test_video.m3u8", false).unwrap(),
+            (None, "720/test_video.m3u8")
+        );
+        assert_eq!(
+            split_bucket_and_key("mybucket/test_video.m3u8", false).unwrap(),
+            (Some("mybucket"), "test_video.m3u8")
+        );
+        assert_eq!(
+            split_bucket_and_key("mybucket/720/test_video.m3u8", false).unwrap(),
+            (Some("mybucket"), "720/test_video.m3u8")
+        );
+    }
+
+    #[test]
+    fn test_split_bucket_and_key_s3_requires_bucket() {
+        assert!(split_bucket_and_key("test_video.m3u8", true).is_err());
+        assert_eq!(
+            split_bucket_and_key("mybucket/test_video.m3u8", true).unwrap(),
+            (Some("mybucket"), "test_video.m3u8")
+        );
+    }
+
+    #[test]
+    fn test_extract_job_id_from_key() {
+        assert_eq!(
+            extract_job_id_from_key("test_video.m3u8").unwrap(),
+            "test_video"
+        );
+        assert_eq!(
+            extract_job_id_from_key("test_video-h265.m3u8").unwrap(),
+            "test_video"
+        );
+        assert_eq!(
+            extract_job_id_from_key("720/test_video.m3u8").unwrap(),
+            "test_video"
+        );
+        assert_eq!(
+            extract_job_id_from_key("720/test_video-h265-001.m4s").unwrap(),
+            "test_video"
+        );
+        assert!(extract_job_id_from_key("bad.name.m3u8").is_err());
+        assert!(extract_job_id_from_key("a-b-c-d.m3u8").is_err());
+    }
+
+    #[test]
+    fn test_validate_bucket_for_write_rejects_numeric_only() {
+        assert!(validate_bucket_for_write("mybucket").is_ok());
+        assert!(validate_bucket_for_write("123").is_err());
+        assert!(validate_bucket_for_write("bucket/123").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_upload_mp4_raw_requires_dst_bucket_when_s3() {
+        use crate::opendal::{StorageBackend, StorageConfig, StorageManager};
+        use axum::body::Body;
+        use axum::http::Request;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let storage_manager = StorageManager::new(StorageConfig {
+            backend: StorageBackend::S3 {
+                endpoint: Some("http://127.0.0.1:9000".into()),
+                region: Some("us-east-1".into()),
+                access_key_id: "minioadmin".into(),
+                secret_access_key: "minioadmin".into(),
+            },
+            workspace: temp_dir.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+
+        let state = AppState::new(0, temp_dir.path(), storage_manager, None, Vec::new())
+            .await
+            .unwrap();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/upload?id=test123&crf=23")
+            .header(header::CONTENT_TYPE, "video/mp4")
+            .body(Body::from("fake mp4 data"))
+            .unwrap();
+
+        let response = upload_mp4_raw(Extension(state), request)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let upload_response: UploadResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(upload_response.job_id, "test123");
+        assert!(upload_response.message.contains("dst_bucket"));
+    }
+
+    #[tokio::test]
+    async fn test_upload_mp4_raw_rejects_numeric_only_dst_bucket_when_s3() {
+        use crate::opendal::{StorageBackend, StorageConfig, StorageManager};
+        use axum::body::Body;
+        use axum::http::Request;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let storage_manager = StorageManager::new(StorageConfig {
+            backend: StorageBackend::S3 {
+                endpoint: Some("http://127.0.0.1:9000".into()),
+                region: Some("us-east-1".into()),
+                access_key_id: "minioadmin".into(),
+                secret_access_key: "minioadmin".into(),
+            },
+            workspace: temp_dir.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+
+        let state = AppState::new(0, temp_dir.path(), storage_manager, None, Vec::new())
+            .await
+            .unwrap();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/upload?id=test123&crf=23&dst_bucket=123")
+            .header(header::CONTENT_TYPE, "video/mp4")
+            .body(Body::from("fake mp4 data"))
+            .unwrap();
+
+        let response = upload_mp4_raw(Extension(state), request)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let upload_response: UploadResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(upload_response.job_id, "test123");
+        assert!(upload_response.message.contains("numeric-only"));
+    }
+
+    #[tokio::test]
+    async fn test_migrate_videos_requires_s3_backend() {
+        use crate::opendal::{StorageBackend, StorageConfig, StorageManager};
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let storage_manager = StorageManager::new(StorageConfig {
+            backend: StorageBackend::Local,
+            workspace: temp_dir.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+
+        let state = AppState::new(0, temp_dir.path(), storage_manager, None, Vec::new())
+            .await
+            .unwrap();
+
+        let request = MigrateRequest {
+            src_bucket: "src".into(),
+            dst_bucket: "dst".into(),
+            job_id: "test123".into(),
+            dry_run: true,
+            widths: None,
+        };
+
+        let response = migrate_videos(Extension(state), Json(request))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let err: MigrateErrorResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(err.job_id, "test123");
+        assert!(err.message.contains("not s3"));
+    }
+
+    #[tokio::test]
+    async fn test_migrate_videos_rejects_numeric_only_buckets() {
+        use crate::opendal::{StorageBackend, StorageConfig, StorageManager};
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let storage_manager = StorageManager::new(StorageConfig {
+            backend: StorageBackend::S3 {
+                endpoint: Some("http://127.0.0.1:9000".into()),
+                region: Some("us-east-1".into()),
+                access_key_id: "minioadmin".into(),
+                secret_access_key: "minioadmin".into(),
+            },
+            workspace: temp_dir.path().to_path_buf(),
+        })
+        .await
+        .unwrap();
+
+        let state = AppState::new(0, temp_dir.path(), storage_manager, None, Vec::new())
+            .await
+            .unwrap();
+
+        let request = MigrateRequest {
+            src_bucket: "123".into(),
+            dst_bucket: "dst".into(),
+            job_id: "test123".into(),
+            dry_run: true,
+            widths: None,
+        };
+
+        let response = migrate_videos(Extension(state), Json(request))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let err: MigrateErrorResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(err.job_id, "test123");
+        assert!(err.message.contains("numeric-only"));
     }
 }
