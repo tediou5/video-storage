@@ -19,10 +19,37 @@ env:
     RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
 
 jobs:
+    verify-release-target:
+        name: Verify release target
+        runs-on: ubuntu-latest
+        if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' }}
+        outputs:
+            should_release: ${{ steps.verify.outputs.should_release }}
+            master_sha: ${{ steps.verify.outputs.master_sha }}
+        steps:
+            - name: Ensure workflow SHA is current master HEAD
+              id: verify
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  set -euo pipefail
+
+                  master_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq .object.sha)"
+                  echo "master_sha=${master_sha}" >> "$GITHUB_OUTPUT"
+
+                  if [ "$master_sha" != "$RELEASE_SHA" ]; then
+                      echo "should_release=false" >> "$GITHUB_OUTPUT"
+                      echo "skip release: workflow SHA ${RELEASE_SHA} is not current master HEAD ${master_sha}"
+                      exit 0
+                  fi
+
+                  echo "should_release=true" >> "$GITHUB_OUTPUT"
+
     build-ubuntu-22-04:
         name: Build (Ubuntu 22.04)
         runs-on: ubuntu-22.04
-        if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' }}
+        needs: [verify-release-target]
+        if: ${{ needs.verify-release-target.outputs.should_release == 'true' }}
         steps:
             - uses: actions/checkout@v4
               with:
@@ -80,7 +107,8 @@ jobs:
         name: Build (Rocky Linux 9)
         runs-on: ubuntu-latest
         container: rockylinux:9
-        if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' }}
+        needs: [verify-release-target]
+        if: ${{ needs.verify-release-target.outputs.should_release == 'true' }}
         steps:
             - uses: actions/checkout@v4
               with:
@@ -139,14 +167,39 @@ jobs:
 
     release-master:
         name: Release (master)
-        needs: [build-ubuntu-22-04, build-rocky-9]
+        needs: [verify-release-target, build-ubuntu-22-04, build-rocky-9]
         runs-on: ubuntu-latest
-        if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' }}
+        if: ${{ needs.verify-release-target.outputs.should_release == 'true' }}
         steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ env.RELEASE_SHA }}
+                  fetch-depth: 0
+
             - name: Download artifacts
               uses: actions/download-artifact@v4
               with:
                   path: dist
+
+            - name: Re-check master HEAD before publishing
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  set -euo pipefail
+
+                  current_master_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq .object.sha)"
+                  if [ "$current_master_sha" != "$RELEASE_SHA" ]; then
+                      echo "skip release: master moved from ${RELEASE_SHA} to ${current_master_sha}" >&2
+                      exit 1
+                  fi
+
+            - name: Move master tag to release SHA
+              run: |
+                  set -euo pipefail
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git tag -f master "${RELEASE_SHA}"
+                  git push origin refs/tags/master --force
 
             - name: Create/update GitHub Release
               env:
@@ -155,14 +208,15 @@ jobs:
                   set -euo pipefail
                   shopt -s globstar nullglob
 
+                  repo="${GITHUB_REPOSITORY}"
                   tag=master
                   title=master
                   notes="Automated build from master (${RELEASE_SHA})"
 
-                  if gh release view "$tag" >/dev/null 2>&1; then
-                      gh release edit "$tag" --title "$title" --prerelease --notes "$notes"
+                  if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+                      gh release edit "$tag" --repo "$repo" --title "$title" --prerelease --notes "$notes"
                   else
-                      gh release create "$tag" --title "$title" --prerelease --notes "$notes" --target "${RELEASE_SHA}"
+                      gh release create "$tag" --repo "$repo" --title "$title" --prerelease --notes "$notes" --target "${RELEASE_SHA}"
                   fi
 
                   assets=(dist/**/*.tar.gz)
@@ -170,4 +224,4 @@ jobs:
                       echo "no release assets found under dist/" >&2
                       exit 1
                   fi
-                  gh release upload "$tag" "${assets[@]}" --clobber
+                  gh release upload "$tag" --repo "$repo" "${assets[@]}" --clobber
