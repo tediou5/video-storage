@@ -1,0 +1,173 @@
+name: CD
+
+on:
+    workflow_run:
+        workflows: ["CI"]
+        types: [completed]
+
+permissions:
+    contents: write
+
+concurrency:
+    group: cd-master-release
+    cancel-in-progress: true
+
+env:
+    CARGO_TERM_COLOR: always
+    RUST_BACKTRACE: 1
+    RUST_VERSION: nightly-2024-09-25
+    RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+
+jobs:
+    build-ubuntu-22-04:
+        name: Build (Ubuntu 22.04)
+        runs-on: ubuntu-22.04
+        if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ env.RELEASE_SHA }}
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: ${{ env.RUST_VERSION }}
+
+            - name: Install system dependencies
+              uses: awalsh128/cache-apt-pkgs-action@latest
+              with:
+                  packages: |
+                      libavcodec-dev
+                      libavformat-dev
+                      libavutil-dev
+                      libswscale-dev
+                      libavfilter-dev
+                      libavdevice-dev
+                      clang
+                      pkg-config
+                      nasm
+                      libopus-dev
+                      libvpx-dev
+                      libx264-dev
+                      libx265-dev
+                      libvorbis-dev
+                      libmp3lame-dev
+                      libass-dev
+                      libssl-dev
+                  version: 1.0
+
+            - name: Build release binary
+              run: |
+                  make build
+                  strip ./target/release/video-storage || true
+
+            - name: Package artifact
+              run: |
+                  set -euo pipefail
+                  arch="$(uname -m)"
+                  mkdir -p dist
+                  cp ./target/release/video-storage "./dist/video-storage-ubuntu22.04-${arch}"
+                  (cd dist && sha256sum "video-storage-ubuntu22.04-${arch}" > "video-storage-ubuntu22.04-${arch}.sha256")
+                  tar -C dist -czf "./dist/video-storage-ubuntu22.04-${arch}.tar.gz" "video-storage-ubuntu22.04-${arch}" "video-storage-ubuntu22.04-${arch}.sha256"
+
+            - name: Upload artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: dist-ubuntu-22.04
+                  path: dist/*.tar.gz
+
+    build-rocky-9:
+        name: Build (Rocky Linux 9)
+        runs-on: ubuntu-latest
+        container: rockylinux:9
+        if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ env.RELEASE_SHA }}
+
+            - name: Install build dependencies
+              run: |
+                  set -euo pipefail
+                  dnf install -y git ca-certificates curl-minimal dnf-plugins-core
+                  dnf install -y epel-release
+                  dnf config-manager --set-enabled crb || true
+                  dnf install -y --nogpgcheck https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
+                  dnf install -y --nogpgcheck https://mirrors.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm
+                  dnf install -y \
+                    gcc \
+                    gcc-c++ \
+                    make \
+                    pkgconfig \
+                    cmake \
+                    clang \
+                    nasm \
+                    ffmpeg-devel \
+                    opus-devel \
+                    libvpx-devel \
+                    x264-devel \
+                    x265-devel \
+                    libvorbis-devel \
+                    lame-devel \
+                    libass-devel \
+                    openssl-devel
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: ${{ env.RUST_VERSION }}
+
+            - name: Build release binary
+              run: |
+                  make build
+                  strip ./target/release/video-storage || true
+
+            - name: Package artifact
+              run: |
+                  set -euo pipefail
+                  arch="$(uname -m)"
+                  mkdir -p dist
+                  cp ./target/release/video-storage "./dist/video-storage-rocky9-${arch}"
+                  (cd dist && sha256sum "video-storage-rocky9-${arch}" > "video-storage-rocky9-${arch}.sha256")
+                  tar -C dist -czf "./dist/video-storage-rocky9-${arch}.tar.gz" "video-storage-rocky9-${arch}" "video-storage-rocky9-${arch}.sha256"
+
+            - name: Upload artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: dist-rocky-9
+                  path: dist/*.tar.gz
+
+    release-master:
+        name: Release (master)
+        needs: [build-ubuntu-22-04, build-rocky-9]
+        runs-on: ubuntu-latest
+        if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' }}
+        steps:
+            - name: Download artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  path: dist
+
+            - name: Create/update GitHub Release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  set -euo pipefail
+                  shopt -s globstar nullglob
+
+                  tag=master
+                  title=master
+                  notes="Automated build from master (${RELEASE_SHA})"
+
+                  if gh release view "$tag" >/dev/null 2>&1; then
+                      gh release edit "$tag" --title "$title" --prerelease --notes "$notes"
+                  else
+                      gh release create "$tag" --title "$title" --prerelease --notes "$notes" --target "${RELEASE_SHA}"
+                  fi
+
+                  assets=(dist/**/*.tar.gz)
+                  if [ "${#assets[@]}" -eq 0 ]; then
+                      echo "no release assets found under dist/" >&2
+                      exit 1
+                  fi
+                  gh release upload "$tag" "${assets[@]}" --clobber
