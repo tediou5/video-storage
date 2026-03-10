@@ -48,7 +48,7 @@ tower-http = { version = "0.6.4", features = ["cors", "trace"] }
 hyper = "1.6.0"
 
 # Configuration and CLI
-clap = { version = "4.5.38", features = ["derive"] }
+clap = { version = "4.5.38", features = ["derive", "env"] }
 toml = "0.8"
 reqwest = { version = "0.12", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }

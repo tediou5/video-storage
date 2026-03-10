@@ -180,6 +180,7 @@ video-storage -p 1 \
 When `storage_backend = "s3"`, the bucket is selected per request/job:
 - Upload/convert: pass `dst_bucket` in the `/upload` query string (e.g. `/upload?...&dst_bucket=my-bucket`)
 - Playback: request via `/videos/<bucket>/<key>` (e.g. `/videos/my-bucket/720/<job_id>.m3u8`)
+- Optional compatibility: set `--s3-bucket` (or `S3_BUCKET`) to allow legacy reads via `/videos/<key>` and `/videos/<width>/<key>` (defaults to that bucket)
 - Migrate between buckets (internal API): `POST /migrate {src_bucket, dst_bucket, job_id, ...}`
 - Note: `dst_bucket` must not be numeric-only (e.g. `123`).
 
@@ -214,6 +215,7 @@ storage_backend = "s3"  # Options: "local" or "s3"
 # S3 configuration (required when storage_backend = "s3")
 s3_endpoint = "http://127.0.0.1:9000"
 s3_region = "us-east-1"
+s3_bucket = "my-bucket" # Optional: default bucket for legacy /videos/<key> reads
 s3_access_key_id = "minioadmin"
 s3_secret_access_key = "minioadmin"
 

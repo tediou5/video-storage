@@ -56,6 +56,7 @@ pub async fn run(config: Config) {
             StorageBackend::S3 {
                 endpoint: s3_config.endpoint,
                 region: s3_config.region,
+                default_bucket: s3_config.bucket,
                 access_key_id: s3_config.access_key_id,
                 secret_access_key: s3_config.secret_access_key,
             }

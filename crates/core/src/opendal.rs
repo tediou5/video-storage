@@ -24,6 +24,7 @@ pub enum StorageBackend {
     S3 {
         endpoint: Option<String>,
         region: Option<String>,
+        default_bucket: Option<String>,
         access_key_id: String,
         secret_access_key: String,
     },
@@ -45,12 +46,14 @@ impl StorageManager {
             StorageBackend::S3 {
                 endpoint,
                 region,
+                default_bucket,
                 access_key_id: _,
                 secret_access_key: _,
             } => {
                 info!(
                     endpoint = ?endpoint,
                     region = ?region,
+                    default_bucket = ?default_bucket,
                     "Using S3 storage backend (bucket selected per request/job)"
                 );
             }
@@ -66,6 +69,13 @@ impl StorageManager {
         matches!(self.backend, StorageBackend::S3 { .. })
     }
 
+    pub fn default_bucket(&self) -> Option<&str> {
+        match &self.backend {
+            StorageBackend::S3 { default_bucket, .. } => default_bucket.as_deref(),
+            StorageBackend::Local => None,
+        }
+    }
+
     pub fn operator_for_bucket(&self, bucket: &str) -> Result<Operator> {
         if bucket.is_empty() || bucket.contains('/') {
             return Err(anyhow!("Invalid bucket name"));
@@ -74,6 +84,7 @@ impl StorageManager {
         let StorageBackend::S3 {
             endpoint,
             region,
+            default_bucket: _,
             access_key_id,
             secret_access_key,
         } = &self.backend

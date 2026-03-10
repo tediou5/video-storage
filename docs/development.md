@@ -191,8 +191,9 @@ cargo run -- \
 ```
 
 In S3 mode, the target bucket is selected per request/job:
-- Upload/convert: `POST /upload?...&dst_bucket=video-storage`
-- Playback: `GET /videos/video-storage/<key>`
+- Upload/convert: `POST /upload?...&dst_bucket=<bucket>`
+- Playback: `GET /videos/<bucket>/<key>`
+- Optional compatibility: set `s3_bucket` (or `--s3-bucket` / env `S3_BUCKET`) to allow legacy reads via `GET /videos/<key>` and `GET /videos/<width>/<key>` in S3 mode (reads from the default bucket).
 - Note: `dst_bucket` must not be numeric-only (e.g. `123`).
 
 ### S3/MinIO 集成测试（本地默认不跑）
