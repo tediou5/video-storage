@@ -674,10 +674,22 @@ async fn copy_object_streaming(
     key: &str,
     content_type: Option<&str>,
 ) -> anyhow::Result<u64> {
-    let reader = src.reader(key).await?;
+    const MIGRATE_STREAM_CONCURRENCY: usize = 1;
+    const MIGRATE_STREAM_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+
+    // Migrate against the source bucket in a single stream to avoid amplifying
+    // load with multipart read/write concurrency when the bucket is already hot.
+    let reader = src
+        .reader_with(key)
+        .chunk(MIGRATE_STREAM_CHUNK_SIZE)
+        .concurrent(MIGRATE_STREAM_CONCURRENCY)
+        .await?;
     let mut r = reader.into_futures_async_read(..).await?.compat();
 
-    let mut writer = dst.writer_with(key).chunk(8 * 1024 * 1024).concurrent(8);
+    let mut writer = dst
+        .writer_with(key)
+        .chunk(MIGRATE_STREAM_CHUNK_SIZE)
+        .concurrent(MIGRATE_STREAM_CONCURRENCY);
     if let Some(ct) = content_type {
         writer = writer.content_type(ct);
     }
