@@ -440,12 +440,17 @@ async fn server_file_with_bucket(
         Some((metadata.len(), false))
     } else if let Some(operator) = operator.as_ref() {
         // Try to get size from S3
-        operator
-            .stat(&s3_key)
-            .await
+        operator.stat(&s3_key).await.inspect_err(|error| {
+            warn!(?error, %filename, ?local_path, %s3_key,"Failed to stat video object from S3");
+        })
             .ok()
-            .map(|m| (m.content_length(), true))
+            .map(|metadata| (metadata.content_length(), true))
     } else {
+        warn!(
+            %filename,
+            ?local_path,
+            "Video file not found in filesystem and no S3 operator is available"
+        );
         None
     };
 
@@ -674,10 +679,22 @@ async fn copy_object_streaming(
     key: &str,
     content_type: Option<&str>,
 ) -> anyhow::Result<u64> {
-    let reader = src.reader(key).await?;
+    const MIGRATE_STREAM_CONCURRENCY: usize = 1;
+    const MIGRATE_STREAM_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+
+    // Migrate against the source bucket in a single stream to avoid amplifying
+    // load with multipart read/write concurrency when the bucket is already hot.
+    let reader = src
+        .reader_with(key)
+        .chunk(MIGRATE_STREAM_CHUNK_SIZE)
+        .concurrent(MIGRATE_STREAM_CONCURRENCY)
+        .await?;
     let mut r = reader.into_futures_async_read(..).await?.compat();
 
-    let mut writer = dst.writer_with(key).chunk(8 * 1024 * 1024).concurrent(8);
+    let mut writer = dst
+        .writer_with(key)
+        .chunk(MIGRATE_STREAM_CHUNK_SIZE)
+        .concurrent(MIGRATE_STREAM_CONCURRENCY);
     if let Some(ct) = content_type {
         writer = writer.content_type(ct);
     }
@@ -1057,6 +1074,25 @@ mod tests {
             "default"
         );
         assert!(choose_bucket_for_s3(None, None).is_err());
+    }
+
+    #[test]
+    fn test_legacy_paths_without_bucket_resolve_to_default_s3_bucket() {
+        let (bucket_prefix, key) = split_bucket_and_key("asd.m3u8").unwrap();
+        assert_eq!(bucket_prefix, None);
+        assert_eq!(key, "asd.m3u8");
+        assert_eq!(
+            choose_bucket_for_s3(bucket_prefix, Some("default-bucket")).unwrap(),
+            "default-bucket"
+        );
+
+        let (bucket_prefix, key) = split_bucket_and_key("720/asd.m3u8").unwrap();
+        assert_eq!(bucket_prefix, None);
+        assert_eq!(key, "720/asd.m3u8");
+        assert_eq!(
+            choose_bucket_for_s3(bucket_prefix, Some("default-bucket")).unwrap(),
+            "default-bucket"
+        );
     }
 
     #[test]
