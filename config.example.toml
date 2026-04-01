@@ -5,6 +5,7 @@
 listen_on_port = 32145            # Port to listen on
 internal_port = 32146              # Internal API port to listen on
 permits = 10                      # Number of concurrent conversion jobs (minimum required)
+migrate_permits = 1               # Number of concurrent migration jobs
 token_rate = 0.0                  # Token bucket rate limiting (0.0 = disabled)
 workspace = "./data"              # Working directory for file storage
 
@@ -21,7 +22,7 @@ storage_backend = "local"         # Storage backend: "local" or "s3"
 
 # Note (S3 mode):
 # - Bucket is selected per request/job (e.g. /upload?...&dst_bucket=... and /videos/<bucket>/<key>)
-# - Internal migration endpoint is available: POST /migrate {src_bucket, dst_bucket, job_id, ...}
+# - Internal migration endpoint is available: POST /migrate {src_bucket, dst_bucket, job_id, ...} (async, returns 202)
 
 # Webhook configuration (optional)
 # Uncomment to enable webhook notifications when jobs complete

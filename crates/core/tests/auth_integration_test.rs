@@ -18,6 +18,7 @@ async fn test_server_starts_successfully() {
     let body: serde_json::Value = response.json().await.unwrap();
     assert!(body.get("pending_convert_jobs").is_some());
     assert!(body.get("pending_upload_jobs").is_some());
+    assert!(body.get("pending_migrate_jobs").is_some());
     assert!(body.get("total_pending_jobs").is_some());
 }
 

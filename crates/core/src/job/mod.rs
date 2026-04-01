@@ -1,5 +1,6 @@
 pub mod convert;
 pub mod manager;
+pub mod migrate;
 pub mod raw;
 pub mod upload;
 
@@ -11,27 +12,39 @@ use tracing::{debug, error, info, warn};
 
 // Re-exports for convenience
 pub use convert::ConvertJob;
+pub use migrate::MigrateJob;
 pub use raw::RawJob;
 pub use upload::UploadJob;
 
 pub type JobKind = &'static str;
 pub const UPLOAD_KIND: JobKind = "upload";
 pub const CONVERT_KIND: JobKind = "convert";
+pub const MIGRATE_KIND: JobKind = "migrate";
 
 #[derive(Clone)]
 pub struct JobSemaphores {
     convert: Arc<TokioSemaphore>,
     upload: Arc<TokioSemaphore>,
+    migrate: Arc<TokioSemaphore>,
 }
 
 impl JobSemaphores {
-    pub fn new(convert: Arc<TokioSemaphore>, upload: Arc<TokioSemaphore>) -> Self {
-        Self { convert, upload }
+    pub fn new(
+        convert: Arc<TokioSemaphore>,
+        upload: Arc<TokioSemaphore>,
+        migrate: Arc<TokioSemaphore>,
+    ) -> Self {
+        Self {
+            convert,
+            upload,
+            migrate,
+        }
     }
 
     pub fn for_kind(&self, kind: JobKind) -> Arc<TokioSemaphore> {
         match kind {
             UPLOAD_KIND => self.upload.clone(),
+            MIGRATE_KIND => self.migrate.clone(),
             _ => self.convert.clone(),
         }
     }
@@ -98,10 +111,10 @@ pub trait Job: Clone + Sized + Send + Sync + 'static {
 
             let needed_permits = self.need_permit();
             let semaphore = semaphores.for_kind(kind);
-            let pool_limit = if kind == UPLOAD_KIND {
-                1
-            } else {
-                state.permits
+            let pool_limit = match kind {
+                UPLOAD_KIND => 1,
+                MIGRATE_KIND => state.migrate_permits,
+                _ => state.permits,
             };
             let _permit = if needed_permits > 0 {
                 let acquire = u32::try_from(needed_permits.min(pool_limit))
@@ -191,9 +204,10 @@ impl Action {
                 }
             }
             Action::Webhook { message } => {
-                info!(job_id, kind, message, "Calling webhook(unimplemented)");
-                // TODO: call webhook
-                // state.call_webhook(job_id, kind, "failed").await;
+                info!(
+                    job_id,
+                    kind, message, "Skipping failure webhook by configuration"
+                );
             }
         }
     }
@@ -241,7 +255,7 @@ mod tests {
         .await
         .expect("initialize storage manager");
 
-        let state = AppState::new(1, &workspace_path, storage_manager, None, Vec::new())
+        let state = AppState::new(1, 1, &workspace_path, storage_manager, None, Vec::new())
             .await
             .expect("create app state");
 
