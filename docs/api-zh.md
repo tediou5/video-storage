@@ -180,8 +180,9 @@ curl -g -X POST "http://localhost:32146/upload?id=video2&crf=38&codecs[0]=h265" 
 ```json
 {
   "pending_convert_jobs": 5,      // 待处理的转换任务数
+  "pending_migrate_jobs": 1,      // 待处理的迁移任务数
   "pending_upload_jobs": 2,       // 待处理的上传任务数
-  "total_pending_jobs": 7         // 总待处理任务数
+  "total_pending_jobs": 8         // 总待处理任务数
 }
 ```
 
@@ -210,7 +211,6 @@ curl http://localhost:32146/waitlist
 | src_bucket | string | 是 | 源桶 |
 | dst_bucket | string | 是 | 目标桶 |
 | widths | Vec<u16> | 否 | 需要迁移的清晰度宽度列表；不传则使用服务内置默认分辨率列表 |
-| dry_run | bool | 否 | 是否只统计不执行复制；默认 false |
 
 Bucket 限制：
 - 不能为空
@@ -219,18 +219,17 @@ Bucket 限制：
 
 #### 响应格式
 
-成功响应 (200 OK):
+成功响应 (202 Accepted):
 ```json
 {
   "job_id": "video123",
-  "src_bucket": "old-bucket",
-  "dst_bucket": "new-bucket",
-  "dry_run": false,
-  "objects_total": 4,
-  "objects_copied": 4,
-  "bytes_copied": 12345
+  "message": "Processing in background"
 }
 ```
+
+说明：
+- `/migrate` 现在是异步任务接口，成功入队后立即返回。
+- 迁移成功时会发送通用 webhook；失败仅记录日志，不回调上游。
 
 错误响应：
 
@@ -253,8 +252,7 @@ curl -X POST http://localhost:32146/migrate \
     "job_id": "video123",
     "src_bucket": "old-bucket",
     "dst_bucket": "new-bucket",
-    "widths": [480],
-    "dry_run": false
+    "widths": [480]
   }'
 ```
 
@@ -500,7 +498,7 @@ s3_secret_access_key = "minioadmin"
 当使用 `storage_backend = "s3"` 时，bucket 由上层服务在请求/任务参数中指定：
 - 上传/转码：`POST /upload?...&dst_bucket=<bucket>`
 - 播放读取：`GET /videos/<bucket>/<key>`
-- 迁移对象：`POST /migrate {src_bucket, dst_bucket, job_id, ...}`
+- 迁移对象：`POST /migrate {src_bucket, dst_bucket, job_id, ...}`，异步返回 `202`
 - 注意：`dst_bucket` 不允许为纯数字（例如 `123`），以避免与清晰度路径（如 `720/...`）产生歧义。
 
 ### 认证密钥配置

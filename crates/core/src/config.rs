@@ -15,6 +15,7 @@ use std::path::Path;
 /// listen_on_port = 32145
 /// internal_port = 32146
 /// permits = 10
+/// migrate_permits = 1
 /// token_rate = 0.0
 /// workspace = "./data"
 ///
@@ -48,6 +49,11 @@ pub struct Config {
     #[arg(short, long, default_value_t = MIN_PERMITS)]
     #[serde(default = "default_permits")]
     pub permits: usize,
+
+    /// Number of concurrent migration jobs
+    #[arg(long, default_value_t = default_migrate_permits())]
+    #[serde(default = "default_migrate_permits")]
+    pub migrate_permits: usize,
 
     /// (Deprecated): Token bucket rate limiting (0.0 = disabled)
     #[arg(short, long, default_value_t = 0.0)]
@@ -186,6 +192,7 @@ impl Default for Config {
             listen_on_port: default_port(),
             internal_port: default_internal_port(),
             permits: default_permits(),
+            migrate_permits: default_migrate_permits(),
             token_rate: default_token_rate(),
             workspace: default_workspace(),
             config: None,
@@ -249,6 +256,9 @@ impl Config {
         }
         if self.permits == default_permits() {
             self.permits = file_config.permits;
+        }
+        if self.migrate_permits == default_migrate_permits() {
+            self.migrate_permits = file_config.migrate_permits;
         }
         if self.token_rate == default_token_rate() {
             self.token_rate = file_config.token_rate;
@@ -350,6 +360,10 @@ impl Config {
             }
         }
 
+        if self.migrate_permits == 0 {
+            return Err(anyhow::anyhow!("migrate_permits must be greater than 0"));
+        }
+
         Ok(())
     }
 
@@ -395,6 +409,10 @@ const MIN_PERMITS: usize = 10;
 
 fn default_permits() -> usize {
     MIN_PERMITS
+}
+
+fn default_migrate_permits() -> usize {
+    1
 }
 
 fn default_token_rate() -> f64 {

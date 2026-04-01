@@ -181,7 +181,7 @@ When `storage_backend = "s3"`, the bucket is selected per request/job:
 - Upload/convert: pass `dst_bucket` in the `/upload` query string (e.g. `/upload?...&dst_bucket=my-bucket`)
 - Playback: request via `/videos/<bucket>/<key>` (e.g. `/videos/my-bucket/720/<job_id>.m3u8`)
 - Optional compatibility: set `--s3-bucket` (or `S3_BUCKET`) to allow legacy reads via `/videos/<key>` and `/videos/<width>/<key>` (defaults to that bucket)
-- Migrate between buckets (internal API): `POST /migrate {src_bucket, dst_bucket, job_id, ...}`
+- Migrate between buckets (internal API): `POST /migrate {src_bucket, dst_bucket, job_id, ...}` returns `202 Accepted` and runs in the background
 - Note: `dst_bucket` must not be numeric-only (e.g. `123`).
 
 ### Using configuration file
@@ -198,6 +198,7 @@ listen_on_port = 32145
 internal_port = 32146
 permits = 10
 # Minimum permits is 10 to accommodate codec/scale concurrency and uploads
+migrate_permits = 1
 token_rate = 0.0
 workspace = "./data"
 
@@ -232,7 +233,7 @@ Webhook payload format:
 ```json
 {
   "job_id": "video",
-  "job_type": "convert",  // or "upload"
+  "job_type": "convert",  // or "upload" / "migrate"
   "status": "completed",
   "timestamp": "2025-01-09T12:34:56Z"
 }
@@ -253,8 +254,9 @@ response:
 ```json
 {
   "pending_convert_jobs": 2,
+  "pending_migrate_jobs": 1,
   "pending_upload_jobs": 1,
-  "total_pending_jobs": 3
+  "total_pending_jobs": 4
 }
 ```
 

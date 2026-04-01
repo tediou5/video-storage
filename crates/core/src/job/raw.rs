@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
-use crate::job::{FailureJob, Job, JobKind};
+use crate::job::{CONVERT_KIND, FailureJob, Job, JobKind, MIGRATE_KIND, MigrateJob, UPLOAD_KIND};
 use crate::{ConvertJob, UploadJob};
+use anyhow::{Result, anyhow};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::cmp::Ordering;
@@ -37,23 +38,57 @@ impl SerdeAbleRawJob {
         self.raw.clone()
     }
 
-    pub fn to_json(&self) -> JsonValue {
+    pub fn payload_json(&self) -> JsonValue {
         (self.serializer)(&self.raw)
     }
 
-    pub fn from_json(value: JsonValue) -> Result<Self, serde_json::Error> {
-        #[derive(serde::Deserialize)]
-        #[serde(untagged)]
-        enum DeserAbleJob {
-            Convert(ConvertJob),
-            Upload(UploadJob),
-        }
-
-        let job = serde_json::from_value::<DeserAbleJob>(value)?;
-        Ok(match job {
-            DeserAbleJob::Convert(job) => SerdeAbleRawJob::new(job),
-            DeserAbleJob::Upload(job) => SerdeAbleRawJob::new(job),
+    pub fn to_json(&self) -> JsonValue {
+        serde_json::json!({
+            "kind": self.kind(),
+            "job": self.payload_json(),
         })
+    }
+
+    pub fn from_json(value: JsonValue) -> Result<Self> {
+        match value.get("kind").and_then(JsonValue::as_str) {
+            Some(kind) => {
+                let payload = value
+                    .get("job")
+                    .cloned()
+                    .ok_or_else(|| anyhow!("stored job payload missing `job` field"))?;
+                Self::from_kind_and_payload(kind, payload)
+            }
+            None => Self::from_legacy_json(value),
+        }
+    }
+
+    fn from_kind_and_payload(kind: &str, payload: JsonValue) -> Result<Self> {
+        match kind {
+            CONVERT_KIND => Ok(SerdeAbleRawJob::new(serde_json::from_value::<ConvertJob>(
+                payload,
+            )?)),
+            UPLOAD_KIND => Ok(SerdeAbleRawJob::new(serde_json::from_value::<UploadJob>(
+                payload,
+            )?)),
+            MIGRATE_KIND => Ok(SerdeAbleRawJob::new(serde_json::from_value::<MigrateJob>(
+                payload,
+            )?)),
+            _ => Err(anyhow!("unsupported job kind `{kind}`")),
+        }
+    }
+
+    fn from_legacy_json(value: JsonValue) -> Result<Self> {
+        // Legacy persisted jobs were stored as raw payloads without an explicit kind tag.
+        // Only convert/upload used that format, so a `crf` field is enough to disambiguate.
+        if value.get("crf").is_some() {
+            Ok(SerdeAbleRawJob::new(serde_json::from_value::<ConvertJob>(
+                value,
+            )?))
+        } else {
+            Ok(SerdeAbleRawJob::new(serde_json::from_value::<UploadJob>(
+                value,
+            )?))
+        }
     }
 }
 
@@ -242,4 +277,40 @@ struct VTable {
 
     clone: fn(*const ()) -> RawJob,
     drop: unsafe fn(*mut ()),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::job::convert::Scales;
+
+    #[test]
+    fn tagged_migrate_jobs_round_trip() {
+        let job = MigrateJob::new(
+            "video123".to_string(),
+            "src".to_string(),
+            "dst".to_string(),
+            vec![480],
+        );
+        let raw = SerdeAbleRawJob::new(job);
+        let json = raw.to_json();
+
+        assert_eq!(json["kind"], MIGRATE_KIND);
+        assert_eq!(json["job"]["src_bucket"], "src");
+        assert_eq!(json["job"]["dst_bucket"], "dst");
+
+        let parsed = SerdeAbleRawJob::from_json(json).expect("parse tagged migrate job");
+        assert_eq!(parsed.kind(), MIGRATE_KIND);
+        assert_eq!(parsed.id(), "video123");
+    }
+
+    #[test]
+    fn legacy_convert_jobs_still_load() {
+        let job = ConvertJob::new("video123".to_string(), 23, Scales::new());
+        let payload = serde_json::to_value(job).expect("serialize convert payload");
+
+        let parsed = SerdeAbleRawJob::from_json(payload).expect("parse legacy convert job");
+        assert_eq!(parsed.kind(), CONVERT_KIND);
+        assert_eq!(parsed.id(), "video123");
+    }
 }

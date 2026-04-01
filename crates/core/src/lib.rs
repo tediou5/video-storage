@@ -26,7 +26,7 @@ pub use api::{
 };
 pub use app_state::AppState;
 pub use config::Config;
-pub use job::{ConvertJob, Job, JobResult, UploadJob};
+pub use job::{ConvertJob, Job, JobResult, MigrateJob, UploadJob};
 pub use opendal::{StorageBackend, StorageConfig, StorageManager};
 pub use stream_map::StreamMap;
 
@@ -35,6 +35,7 @@ pub async fn run(config: Config) {
     let listen_on_port = config.listen_on_port;
     let internal_port = config.internal_port;
     let permits = config.permits;
+    let migrate_permits = config.migrate_permits;
     let workspace = config.workspace.clone();
     let webhook_url = config.webhook_url.clone();
     let claim_keys = config.claim_keys.clone();
@@ -79,6 +80,7 @@ pub async fn run(config: Config) {
         .expect("Failed to initialize storage manager");
     let state = AppState::new(
         permits,
+        migrate_permits,
         &workspace_path,
         storage_manager,
         webhook_url,

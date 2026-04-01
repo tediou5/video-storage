@@ -30,6 +30,7 @@ pub struct AppState {
     pub claim_manager: ClaimManager,
     pub storage_manager: Arc<StorageManager>,
     pub permits: usize,
+    pub migrate_permits: usize,
 
     pub temp_dir: PathBuf,
     pub videos_dir: PathBuf,
@@ -40,6 +41,7 @@ pub struct AppState {
 impl AppState {
     pub async fn new(
         permits: usize,
+        migrate_permits: usize,
         workspace: &Path,
         storage_manager: StorageManager,
         webhook_url: Option<String>,
@@ -60,6 +62,7 @@ impl AppState {
             claim_manager,
             storage_manager: Arc::new(storage_manager),
             permits,
+            migrate_permits,
 
             temp_dir: workspace.join(TEMP_DIR),
             uploads_dir: workspace.join(UPLOADS_DIR),
@@ -71,7 +74,7 @@ impl AppState {
         this.claim_manager.start_cleanup_task();
 
         // Start job handler
-        this.start_job_handler(rx, permits);
+        this.start_job_handler(rx, permits, migrate_permits);
 
         Ok(this)
     }
@@ -124,12 +127,18 @@ impl AppState {
         }
     }
 
-    fn start_job_handler(&self, rx: UnboundedReceiver<RawJob>, permits: usize) {
-        info!(permits, "Job handler started");
+    fn start_job_handler(
+        &self,
+        rx: UnboundedReceiver<RawJob>,
+        permits: usize,
+        migrate_permits: usize,
+    ) {
+        info!(permits, migrate_permits, "Job handler started");
         let this = self.clone();
         let semaphores = JobSemaphores::new(
             Arc::new(Semaphore::new(permits)),
             Arc::new(Semaphore::new(1)),
+            Arc::new(Semaphore::new(migrate_permits)),
         );
 
         tokio::spawn(async move {

@@ -2,9 +2,9 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use opendal::Operator;
-use video_storage_core::api::routes::{MigrateRequest, MigrateResponse};
+use video_storage_core::api::routes::{MigrateAcceptedResponse, MigrateRequest};
 use video_storage_core::{StorageBackend, StorageConfig, StorageManager};
-use video_storage_test_server::TestServer;
+use video_storage_test_server::{MockWebhook, TestServer};
 
 fn required_env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
@@ -57,6 +57,7 @@ async fn test_s3_serve_and_migrate_between_buckets_minio() {
     let src_bucket = required_env("VS_TEST_S3_SRC_BUCKET");
     let dst_bucket = required_env("VS_TEST_S3_DST_BUCKET");
 
+    let webhook = MockWebhook::start().await;
     let server = TestServer::start_with_config(|cfg| {
         cfg.storage_backend = "s3".into();
         cfg.s3_endpoint = Some(endpoint.clone());
@@ -64,6 +65,7 @@ async fn test_s3_serve_and_migrate_between_buckets_minio() {
         cfg.s3_bucket = Some(src_bucket.clone());
         cfg.s3_access_key_id = Some(access_key_id.clone());
         cfg.s3_secret_access_key = Some(secret_access_key.clone());
+        cfg.webhook_url = Some(webhook.url());
     })
     .await;
 
@@ -168,7 +170,6 @@ async fn test_s3_serve_and_migrate_between_buckets_minio() {
         src_bucket: src_bucket.clone(),
         dst_bucket: dst_bucket.clone(),
         widths: Some(vec![480]),
-        dry_run: false,
     };
     let response = client
         .post(format!("{}/migrate", server.int_url()))
@@ -176,14 +177,21 @@ async fn test_s3_serve_and_migrate_between_buckets_minio() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200);
-    let migrate: MigrateResponse = response.json().await.unwrap();
+    assert_eq!(response.status(), 202);
+    let migrate: MigrateAcceptedResponse = response.json().await.unwrap();
     assert_eq!(migrate.job_id, job_id);
-    assert_eq!(migrate.src_bucket, src_bucket);
-    assert_eq!(migrate.dst_bucket, dst_bucket);
-    assert!(!migrate.dry_run);
-    assert_eq!(migrate.objects_total, 4);
-    assert_eq!(migrate.objects_copied, 4);
+    assert!(migrate.message.contains("background"));
+
+    let webhook_received = webhook.wait_for_calls(1, 120).await;
+    assert!(
+        webhook_received,
+        "Migrate webhook was not called within timeout"
+    );
+    let calls = webhook.get_calls().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["job_id"], job_id);
+    assert_eq!(calls[0]["job_type"], "migrate");
+    assert_eq!(calls[0]["status"], "completed");
 
     // Verify objects exist in dst bucket and can be served.
     assert_eq!(
