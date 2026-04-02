@@ -206,6 +206,14 @@ pub async fn upload_mp4_raw(
         );
     }
 
+    info!(
+        job_id = %job.id,
+        crf = job.crf,
+        dst_bucket = ?job.dst_bucket,
+        scales = job.scales.len(),
+        codecs = job.codecs.len(),
+        "Accepted upload/convert job via API"
+    );
     state.jobs_manager.add(&job).await;
     _ = state.job_tx.unbounded_send(job.into());
 
@@ -564,6 +572,13 @@ pub async fn migrate_videos(
         request.src_bucket,
         request.dst_bucket,
         MigrateJob::resolved_widths(request.widths),
+    );
+    info!(
+        job_id = %job.id,
+        src_bucket = %job.src_bucket,
+        dst_bucket = %job.dst_bucket,
+        widths = ?job.widths,
+        "Accepted migrate job via API"
     );
     state.jobs_manager.add(&job).await;
     _ = state.job_tx.unbounded_send(job.into());
